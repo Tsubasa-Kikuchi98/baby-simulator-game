@@ -41,3 +41,49 @@ manifest に載っていない name は合成音のままです（載ってい�
 
 **このフォルダは 3D ビルド（`npm run build:3d`）だけ配布されます。** 2D の単一ファイルビルドは
 `assets/` を持たないので、常に合成音で鳴ります。
+
+---
+
+## 赤ちゃんの声（笑い声・泣き声）を入れる
+
+**コード変更は不要**です。上の name のうち次の3つが赤ちゃんの声に相当するので、
+mp3 を置いて manifest に並べればその場面だけ実声に差し替わります。
+
+| name | 鳴る場面（effect） | 入れる声 |
+|---|---|---|
+| `play_done` | おもちゃで遊び終えた（`play_done` / `recipe_ok` の toy 型） | 短い笑い声・喃語 |
+| `clear` | ステージクリア | 弾けた笑い声（長めでよい） |
+| `fuss` | ぐずり開始（`fuss_start`） | ぐずり声。**泣き叫ぶ声は §9.3 の "not scary" に反するので避ける** |
+
+手順:
+
+```bash
+# 1. ファイルを置く
+assets/audio/play_done.mp3
+assets/audio/clear.mp3
+assets/audio/fuss.mp3
+# 2. manifest.json に名前を足す
+```
+```json
+{ "files": ["play_done", "clear", "fuss"] }
+```
+
+```bash
+npm run build:3d
+npx vite preview --outDir dist-3d     # file:// では fetch が失敗するので preview で確認
+```
+
+DevTools のコンソールに `[audio] loaded play_done.mp3` が出れば差し替わっています。
+出ない（=404）ときも合成音にフォールバックするだけで、ゲームは壊れません。
+
+素材の条件:
+
+- モノラル / 44.1kHz / **1〜2秒**（`clear` のみ 3秒程度まで）。長いと次の操作に被る
+- ピークを **-6dBFS 前後**に揃える。既存の合成音は gain 0.1〜0.15 で鳴っているので、
+  実声だけ大きいと浮く。無音の頭（リード）は削っておく
+- `play_done` は遊ぶたびに鳴る＝**最頻出**。耳につかない短く軽いものを選ぶ
+
+**注意：2D の単一ファイルビルド（`npm run build`）は `assets/` を配らないので、常に合成音のままです。**
+2D でも実声を鳴らすには mp3 を data URI で埋め込む改造が別途必要（HTML が数百 KB 増える）。
+
+素材を追加したら、CLAUDE.md の「ライセンス表記欄」に出典・ライセンス・確認日を記入すること。
