@@ -8,8 +8,9 @@ export const ROOM = { w: 800, h: 540, cx: 400, cy: 270 };
 // あわせて固定値のうち SAT_IDLE を -0.5（満足度経済が構造的に負で satLow 比率が 50〜77% になっていたため）、
 // COMBO_ATTRACT を 1.5 に決めた。sim/out/tune.json・sim/out/assert.json を参照。
 // v3（CONTRACT §9）以降の MOVE_* / MOOD_SPEED_GAIN は初期値のまま。調整はユーザー判断（sim/assert.js の結果を見て決める）。
+// 2026-09-13：難易度が低すぎたため、ユーザー判断で BABY_SPEED を 1.5 倍に（47→70、ステージ3 65→98）。
 export const TUNING = {
-  BABY_SPEED: 47, BABY_SPEED_STAGE3: 65, BORED_SPEED_MULT: 1.3,
+  BABY_SPEED: 70, BABY_SPEED_STAGE3: 98, BORED_SPEED_MULT: 1.3,
   PLAY_SEC: 3, BORED_SEC_BASE: 30, BORED_SEC_STEP: 10, DROP_AFTER_SEC: 8, TAKEAWAY_BORED_SEC: 3,
   SAT_START: 70, SAT_NO_TOY: -1.9, SAT_IDLE: -0.5, SAT_PLAY_BY_COUNT: [25, 15, 10], SAT_LOW: 40,
   WEIGHT_TOY: 3.0, WEIGHT_TOY_DRAGGED: 5.0, WEIGHT_HAZARD: 1.0, WEIGHT_HAZARD_BORED: 1.5,
