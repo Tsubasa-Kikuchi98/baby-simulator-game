@@ -152,3 +152,61 @@ test('score formula: hiyari, play and time bonus (hazards fixed by drag & drop)'
   assert.equal(clear[0].payload.score, 2000 + plays * 200 + Math.round(fixedAt) * 10);
   assert.equal(game.state.result.score, clear[0].payload.score);
 });
+
+// タイトルのステージ選択（§9.4）：選んだ 1 ステージだけ遊び、まとめ → タイトルへ戻る
+test('title stage select: selectStage(1) -> loading(play) -> stage2 only -> finalResult -> title', () => {
+  const game = newGame(1, FROZEN);
+  const s = game.state;
+  const screens = [];
+  const collect = fx => { for (const e of ofType(fx, 'screen')) screens.push(`${e.payload.from}>${e.payload.to}`); };
+
+  assert.equal(s.screen, 'title');
+  assert.equal(s.mode, 'campaign');
+  game.dispatch({ type: 'selectStage', index: 1 });
+  assert.equal(s.mode, 'single');
+  assert.equal(s.screen, 'loading');
+  assert.equal(s.loading.next, 'play');   // チュートリアルは挟まない
+  assert.equal(s.stageIndex, 1);
+  game.dispatch({ type: 'assetsReady' });
+  collect(run(game, 2.6));
+  assert.equal(s.screen, 'play');
+  assert.equal(s.stage.id, 2);
+  assert.equal(s.babies.length, 2);
+
+  collect(run(game, 45.1));
+  assert.equal(s.screen, 'stageResult');
+  assert.equal(s.result.cleared, true);
+  game.dispatch({ type: 'next' });        // single では次ステージへ進まずまとめへ
+  assert.equal(s.screen, 'finalResult');
+  game.dispatch({ type: 'toTitle' });
+  assert.equal(s.screen, 'title');
+  assert.equal(s.mode, 'campaign');
+  assert.equal(s.totalScore, 0);
+  collect(game.update(DT));
+
+  assert.deepEqual(screens, [
+    'title>loading', 'loading>play', 'play>stageResult', 'stageResult>finalResult', 'finalResult>title'
+  ]);
+});
+
+test('selectStage is ignored outside title / out of range; toTitle works from stageResult', () => {
+  const game = newGame(1, FROZEN);
+  const s = game.state;
+  game.dispatch({ type: 'selectStage', index: 99 });
+  assert.equal(s.screen, 'title');
+  game.dispatch({ type: 'selectStage', index: -1 });
+  assert.equal(s.screen, 'title');
+
+  game.startStage(0);
+  assert.equal(s.screen, 'play');
+  game.dispatch({ type: 'selectStage', index: 1 });   // play 中は無視
+  assert.equal(s.screen, 'play');
+  assert.equal(s.stage.id, 1);
+
+  run(game, 45.1);
+  assert.equal(s.screen, 'stageResult');
+  game.dispatch({ type: 'toTitle' });                 // 結果画面からいつでもタイトルへ
+  assert.equal(s.screen, 'title');
+  assert.equal(s.totalScore, 0);
+  assert.equal(s.result, null);
+});

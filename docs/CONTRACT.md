@@ -23,12 +23,15 @@ game.startStage(index, { skipLoading = true } = {})  // sim/テスト用：即 P
 
 | action | 遷移 |
 |---|---|
-| `{type:'start'}` | Title → Loading（`loading.next = 'tutorial'`、stageIndex=0） |
+| `{type:'start'}` | Title → Loading（`loading.next = 'tutorial'`、stageIndex=0）。`state.mode = 'campaign'` |
+| `{type:'selectStage', index}` | Title のステージ選択 → Loading（`loading.next = 'play'`、Tutorial は挟まない）。`state.mode = 'single'`。範囲外・Title 以外では無視 |
 | `{type:'assetsReady'}` | Loading 中に描画層の `loadStage()` が完了したら main が送る。`loading.ready = true` |
 | `{type:'tutorialOk'}` | Tutorial → Play(stage 0) |
-| `{type:'next'}` | StageResult(clear) → Loading → Play(次) / 最終ステージなら FinalResult |
+| `{type:'next'}` | StageResult(clear) → Loading → Play(次) / 最終ステージなら FinalResult。`mode === 'single'` のときは次へ進まず FinalResult |
 | `{type:'retry'}` | StageResult(fail) → Loading → Play(同じステージ) |
-| `{type:'toTitle'}` | FinalResult（または任意）→ Title。`totalScore`・`shownTipIds` をリセット |
+| `{type:'toTitle'}` | FinalResult / StageResult（または任意）→ Title。`totalScore`・`shownTipIds`・`mode` をリセット |
+
+`state.mode`：`'campaign'`（はじめから通し）/ `'single'`（Title で選んだ 1 ステージだけ）。Title は「はじめる（さいしょから）」と全ステージのボタン（`.btn-stage[data-stage-index]`）を出す。StageResult・FinalResult には常に「タイトルへ」を置き、クリア後は Title に戻れる。
 
 Loading は `update(dt)` で `loading.elapsed` を進め、`elapsed >= tuning.LOADING_MIN_SEC && ready` になったら自動で `loading.next` へ遷移する。
 Loading に入った瞬間、`pickTip(rng, state.shownTipIds)` で `state.tip` を選ぶ。Tutorial 用の tip は `state.tutorialTip`（Loading→Tutorial 遷移時に別途 pick）。

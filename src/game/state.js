@@ -17,6 +17,9 @@ import { createVisitors, updateVisitors } from './visitors.js';
 export function createGame({ rng = createRng(1), stages = STAGES, tuning = TUNING } = {}) {
   const state = {
     screen: 'title',
+    // 'campaign'：はじめから通しで遊ぶ（チュートリアル → 全ステージ → finalResult）
+    // 'single'  ：タイトルで選んだ 1 ステージだけ遊ぶ（結果画面からタイトルへ戻る）
+    mode: 'campaign',
     stageIndex: 0,
     stage: null,
     objects: [],
@@ -265,8 +268,22 @@ export function createGame({ rng = createRng(1), stages = STAGES, tuning = TUNIN
     if (!action) return;
     switch (action.type) {
       case 'start':
-        if (state.screen === 'title') enterLoading('tutorial', 0);
+        if (state.screen === 'title') {
+          state.mode = 'campaign';
+          state.totalScore = 0;
+          enterLoading('tutorial', 0);
+        }
         break;
+      // タイトルのステージ選択（§9.4）。選んだステージだけを遊び、結果画面からタイトルへ戻る
+      case 'selectStage': {
+        if (state.screen !== 'title') break;
+        const i = action.index | 0;
+        if (i < 0 || i >= stages.length) break;
+        state.mode = 'single';
+        state.totalScore = 0;
+        enterLoading('play', i);
+        break;
+      }
       case 'assetsReady':
         if (state.screen === 'loading') state.loading.ready = true;
         break;
@@ -278,7 +295,9 @@ export function createGame({ rng = createRng(1), stages = STAGES, tuning = TUNIN
         break;
       case 'next':
         if (state.screen === 'stageResult' && state.result && state.result.cleared) {
-          if (state.stageIndex + 1 < stages.length) enterLoading('play', state.stageIndex + 1);
+          // ステージ選択で遊んでいるときは次へ進まず、まとめ（finalResult）を出してタイトルへ戻す
+          if (state.mode === 'single') transition('finalResult');
+          else if (state.stageIndex + 1 < stages.length) enterLoading('play', state.stageIndex + 1);
           else transition('finalResult');
         }
         break;
@@ -288,6 +307,7 @@ export function createGame({ rng = createRng(1), stages = STAGES, tuning = TUNIN
         }
         break;
       case 'toTitle':
+        state.mode = 'campaign';
         state.totalScore = 0;
         state.shownTipIds.length = 0;
         state.result = null;

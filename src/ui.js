@@ -176,12 +176,33 @@ export function createUI({ container, game, onAction, audio = null, logContainer
   let loadingFill = null;
   let loadingPct = -1;
 
-  function button(label, actionType, extraClass = '') {
+  function button(label, actionType, extraClass = '', extra = null) {
     const b = h('button', `btn ${extraClass}`.trim(), label);
     b.type = 'button';
     b.dataset.action = actionType;
-    b.addEventListener('click', () => onAction({ type: actionType }));
+    b.addEventListener('click', () => onAction({ type: actionType, ...(extra || {}) }));
     return b;
+  }
+
+  // タイトルのステージ選択（§9.4）。1 ステージだけ遊び、結果からタイトルへ戻る
+  function stageSelect() {
+    const sec = h('section', 'stage-select');
+    sec.append(h('h2', 'stage-select-title', 'ステージを選ぶ'));
+    const list = h('div', 'stage-list');
+    STAGES.forEach((st, i) => {
+      const b = button('', 'selectStage', 'btn-stage', { index: i });
+      b.replaceChildren();
+      b.dataset.stageIndex = String(i);
+      b.setAttribute('aria-label', `ステージ${i + 1} ${st.name}`);
+      b.append(
+        h('span', 'stage-no', `ステージ${i + 1}`),
+        h('span', 'stage-name', st.name),
+        h('span', 'stage-meta', `${st.timeLimit}秒　赤ちゃん${st.babies}人`)
+      );
+      list.append(b);
+    });
+    sec.append(list);
+    return sec;
   }
 
   function tipBlock(tip, cls = 'tip') {
@@ -216,7 +237,8 @@ export function createUI({ container, game, onAction, audio = null, logContainer
       h('p', 'eyebrow', 'おうちの安全パズル'),
       h('h1', 'title', 'ベビーセーフ・ルーム'),
       h('p', 'lead', titleLead()),
-      button('はじめる', 'start', 'btn-primary')
+      button('はじめる（さいしょから）', 'start', 'btn-primary'),
+      stageSelect()
     );
     const mute = muteButton('mute-btn-title');
     if (mute) panel.append(mute);
@@ -322,7 +344,15 @@ export function createUI({ container, game, onAction, audio = null, logContainer
     const card = cards[r.eduCardId] || (state.stage ? cards[state.stage.eduCardId] : null);
     panel.append(cardBlock(card));
 
-    panel.append(cleared ? button('つぎへ', 'next', 'btn-primary') : button('もういちど', 'retry', 'btn-primary'));
+    const actions = h('div', 'result-actions');
+    if (cleared) {
+      // ステージ選択で遊んでいるときは次へ進まない（'next' → まとめ → タイトル）
+      actions.append(button(state.mode === 'single' ? 'けっかを見る' : 'つぎへ', 'next', 'btn-primary'));
+    } else {
+      actions.append(button('もういちど', 'retry', 'btn-primary'));
+    }
+    actions.append(button('タイトルへ', 'toTitle'));
+    panel.append(actions);
     ov.append(panel);
   }
 
@@ -330,7 +360,7 @@ export function createUI({ container, game, onAction, audio = null, logContainer
     ov.replaceChildren();
     const panel = h('div', 'panel panel-final');
     panel.append(h('p', 'eyebrow', 'おつかれさまでした'));
-    panel.append(h('h2', 'result-title', '合計スコア'));
+    panel.append(h('h2', 'result-title', state.mode === 'single' ? 'スコア' : '合計スコア'));
     panel.append(h('p', 'total-score', String(state.totalScore ?? 0)));
     panel.append(cardBlock(cards.summary));
     panel.append(button('タイトルへ', 'toTitle', 'btn-primary'));

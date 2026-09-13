@@ -387,6 +387,49 @@ body {
 .btn-primary:hover { background: #45806d; }
 .btn:focus-visible { outline: 3px solid rgba(79, 143, 122, 0.45); outline-offset: 2px; }
 
+/* Title：ステージ選択 */
+.stage-select {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--panel-edge);
+  text-align: left;
+}
+.stage-select-title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--ink-soft);
+}
+.stage-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.btn-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border-color: var(--panel-edge);
+  background: #f2e9dc;
+  text-align: left;
+}
+.btn-stage:hover { background: #e8dccb; }
+.stage-no { font-size: 12px; letter-spacing: 0.08em; color: var(--ink-soft); font-weight: 600; }
+.stage-name { font-size: 17px; font-weight: 700; }
+.stage-meta { font-size: 12px; color: var(--ink-soft); font-weight: 400; }
+
+/* 結果画面のボタン列 */
+.result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+
 /* Loading */
 .tip { text-align: left; }
 .tip-text { margin: 0; font-size: 15px; }
