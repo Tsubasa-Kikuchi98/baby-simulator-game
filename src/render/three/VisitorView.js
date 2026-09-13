@@ -2,7 +2,7 @@
 // CatView（type 'cat'、§11.5）：赤ちゃんの半分ほどの低い横向きカプセル＋4 本の速い脚＋しっぽ＋🐈 の顔。くわえた物は renderer が mouthPosition に置く。
 // どちらも歩行で上下に小さく揺れ、進行方向（dirX, dirY）を向く。プレイヤーは触れない（pickObject の対象にしない）。
 import * as THREE from 'three';
-import { COLORS, makeSprite, makeEmojiTexture, disposeSprite } from './textures.js';
+import { COLORS, makeSprite, makeEmojiTexture, RingTexture, disposeSprite } from './textures.js';
 
 export const VISITOR_H = 60;        // 赤ちゃん（BABY_H 30）の 2 倍
 const WALK_RATE = 9;                // 歩行の上下動（rad/s）
@@ -12,9 +12,16 @@ const armGeo = new THREE.CapsuleGeometry(2.6, 16, 3, 8);
 const discGeo = new THREE.CircleGeometry(13, 24);
 
 export class VisitorView {
-  /** @param {object} def state.visitors[i]（id, label, emoji, x, y） @param {object} shared 共有テクスチャ＋ labels */
-  constructor(def, shared) {
+  /**
+   * @param {object} def state.visitors[i]（id, label, emoji, x, y）
+   * @param {object} shared 共有テクスチャ＋ labels
+   * @param {{ scale?: number, shirt?: number, pants?: number, ink?: string }} [opts]
+   *        兄（§12.4）は小柄で色違いなので、同じ人型をこの opts で作り分ける
+   */
+  constructor(def, shared, { scale = 1, shirt = COLORS.visitorShirt, pants = COLORS.visitorPants, ink = COLORS.visitorInk } = {}) {
     this.id = def.id;
+    this.type = def.type || 'uncle';
+    this.scale = scale;
     this.group = new THREE.Group();            // 床位置（ゲーム座標）
     this.group.position.set(def.x, 0, def.y);
     this.anim = new THREE.Group();             // 上下動
@@ -22,8 +29,9 @@ export class VisitorView {
     this.facing = new THREE.Group();           // 進行方向（+z が前）
     this.anim.add(this.facing);
 
-    this.shirtMat = new THREE.MeshStandardMaterial({ color: COLORS.visitorShirt, roughness: 0.9 });
-    this.pantsMat = new THREE.MeshStandardMaterial({ color: COLORS.visitorPants, roughness: 0.9 });
+    this.facing.scale.setScalar(scale);
+    this.shirtMat = new THREE.MeshStandardMaterial({ color: shirt, roughness: 0.9 });
+    this.pantsMat = new THREE.MeshStandardMaterial({ color: pants, roughness: 0.9 });
     this.body = new THREE.Mesh(bodyGeo, this.shirtMat);
     this.body.position.y = 14 + (VISITOR_H - 21) / 2;
     this.body.castShadow = true;
@@ -39,8 +47,8 @@ export class VisitorView {
     this.facing.add(this.body, this.legL, this.legR, this.armL, this.armR);
 
     // 顔（絵文字 Sprite。常にカメラを向く）
-    this.face = makeSprite(makeEmojiTexture(def.emoji || '🧔'), 32, 32, { renderOrder: 11 });
-    this.face.position.set(0, VISITOR_H - 2, 0);
+    this.face = makeSprite(makeEmojiTexture(def.emoji || '🧔'), 32 * scale, 32 * scale, { renderOrder: 11 });
+    this.face.position.set(0, (VISITOR_H - 2) * scale, 0);
     this.anim.add(this.face);
 
     // 足元の影
@@ -50,9 +58,13 @@ export class VisitorView {
     this.group.add(this.disc);
 
     // 名前
-    this.label = shared.labels.create(def.label || 'おじさん', { color: COLORS.visitorInk, priority: 2 });
-    this.label.position.set(0, VISITOR_H + 20, 0);
+    this.label = shared.labels.create(def.label || 'おじさん', { color: ink, priority: 2 });
+    this.label.position.set(0, VISITOR_H * scale + 20, 0);
     this.group.add(this.label);
+
+    // おとなしくしている残り時間（兄だけ。§12.4。渡したおもちゃに飽きるまで）
+    this.busyRingTex = null;
+    this.busyRing = null;
 
     this.heading = 0;
     this.phase = 0;
@@ -85,13 +97,34 @@ export class VisitorView {
     this.armR.rotation.x = s * 0.45;
   }
 
-  /** 手（item を落とす位置）の部屋ローカル座標 */
+  /**
+   * 兄がおもちゃで遊んでいる残り割合（§12.4）。null / 0 以下で消える。
+   * 判断（busyUntil と elapsed の比較）は ThreeRenderer 側、ここは見せ方だけ。
+   */
+  setBusy(frac) {
+    const on = frac != null && frac > 0;
+    if (!on) {
+      if (this.busyRing) this.busyRing.visible = false;
+      return;
+    }
+    if (!this.busyRing) {
+      this.busyRingTex = new RingTexture({ color: COLORS.good, track: COLORS.ringTrack, lineWidth: 16, shadow: false });
+      this.busyRing = makeSprite(this.busyRingTex.texture, 16, 16, { renderOrder: 12 });
+      this.busyRing.position.set(14 * this.scale, VISITOR_H * this.scale + 6, 0);
+      this.group.add(this.busyRing);
+    }
+    this.busyRingTex.update(Math.max(0, Math.min(1, frac)));
+    this.busyRing.visible = true;
+  }
+
+  /** 手（item を落とす位置・渡されたおもちゃを持つ位置）の部屋ローカル座標 */
   handPosition(out) {
     const f = this.heading;
+    const k = this.scale;
     out.set(
-      this.group.position.x + Math.sin(f) * 10,
-      VISITOR_H - 26,
-      this.group.position.z + Math.cos(f) * 10
+      this.group.position.x + Math.sin(f) * 10 * k,
+      (VISITOR_H - 26) * k,
+      this.group.position.z + Math.cos(f) * 10 * k
     );
     return out;
   }
@@ -99,6 +132,8 @@ export class VisitorView {
   dispose() {
     if (this.group.parent) this.group.parent.remove(this.group);
     disposeSprite(this.face);
+    disposeSprite(this.busyRing);
+    if (this.busyRingTex) this.busyRingTex.dispose();
     disposeSprite(this.label);
     this.shirtMat.dispose();
     this.pantsMat.dispose();

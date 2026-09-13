@@ -13,7 +13,8 @@
 | [sim/README.md](sim/README.md) | ヘッドレスシミュレータの詳細 |
 | [assets/audio/README.md](assets/audio/README.md) | 音声素材の置き方 |
 
-仕様書と CONTRACT が食い違う場合は **CONTRACT が正**（長押しでの対策廃止、3ステージ→2ステージ など）。
+仕様書と CONTRACT が食い違う場合は **CONTRACT が正**（長押しでの対策廃止、ステージ構成の変更 など）。
+**現在は 3 ステージ構成**：キッチン（45秒）→ 双子（45秒）→ 夕方のリビング（60秒）。ステージ3 の 4 つの新機構は CONTRACT §12。
 
 ---
 
@@ -57,7 +58,7 @@ npm run sim:tune -- --workers 6                       # 5変数 × 3水準 = 243
 ```
 
 - ボット：`noop`（下限）/ `optimal`（上限）/ `intervene_only` / `random`（例外ファザー）/ `human_like`（**主指標**）
-- `--stage` は1始まり（`1`=キッチン、`2`=双子、`1,2`、`all`）、`--seed` 既定1、`--tuning` は `TUNING` にマージ
+- `--stage` は1始まり（`1`=キッチン、`2`=双子、`3`=夕方のリビング、`1,2`、`all`）、`--seed` 既定1、`--tuning` は `TUNING` にマージ
 - `sim:assert` は指標に加えて **`random` × 1000回の例外ゼロ・最大フレーム < 50ms・同一シード2回の結果一致** も検証する
 - 指標が通らないとき **勝手に目標範囲を緩めない**。仕様書 §13.4 の手順に従い、通る条件が無ければ人間に報告する
 
@@ -99,7 +100,7 @@ assets/models/       glb 置き場      assets/audio/  効果音・BGM 置き場
 | `visitors.js` | おじさん（path をたどり item を落とす・乱数不使用）と猫（rng で床の軽い物を運ぶ） |
 | `drop.js` | `dragEnd` のドロップ先判定。**レシピ → 容れ物 → 高い場所 → recipe_ng → 床** の順で最初に成立したものを適用 |
 | `recipes.js` | `fix`（グッズ→危険）/ `store`（軽い危険→収納先）/ `toy`（おもちゃ合成）の3種 |
-| `combos.js` | 組み合わせ危険。`stage.combos` に明示列挙されたものだけを見る（動的生成しない） |
+| `combos.js` | 組み合わせ危険。`stage.combos` / `stage.placementCombos`（配置コンボ §12.3）に明示列挙されたものだけを見る（動的生成しない） |
 | `scoring.js` | スコア・クリア/失敗判定（`judge`）・ヒヤリ計上・介入ペナルティ |
 | `log.js` | effect → できごとログの日本語文言（`describeEvent`）。`state.log` に最大200件 |
 | `edu.js` | 教育カードと豆知識。**`verified:false` の豆知識は `pickTip` が除外する** |
@@ -148,9 +149,11 @@ assets/models/       glb 置き場      assets/audio/  効果音・BGM 置き場
 ### データ・命名
 
 10. ステージ／オブジェクト定義の追加は `stages.js` のファクトリ関数経由。
-    `draggable = weight === 'light'` は自動導出なので手で書かない
+    `draggable = weight === 'light'` は自動導出なので手で書かない。
+    **例外は `weight: 'push'`**（押して動かす家具・CONTRACT §12.3）。`pushable()` ファクトリが `draggable: true` を明示的に持つ
 11. `kind` は `hazard | item | toy | goods | container | prop` の6種。`state` の取りうる値は kind ごとに違う
-    （hazard/item: `open|fixed|removed`、toy: `available|bored|removed`、goods: `available|used|removed`）
+    （hazard/item: `open|fixed|removed`、toy: `available|bored|removed`、goods: `available|used|removed`）。
+    **`activeAt` を持つ hazard は `inactive` で始まる**（時限ハザード・§12.2）。`inactive` は「まだ危険ではないが、先回りして対策はできる」
 12. **新しい effect type を足したら4か所を更新する**：`log.js` の `describeEvent`、`main.js` の `audioNameFor`、
     2D の `playEffect`、3D の `playEffect`
 13. 教育コンテンツ（`edu.js`）は**実装者が追加・変更しない**。出典未確認のものは `verified: false` にする
@@ -178,6 +181,12 @@ assets/models/       glb 置き場      assets/audio/  効果音・BGM 置き場
 - **`update()` 内の処理順序に依存関係がある。** `noToy` は赤ちゃん更新の前後で2回判定され、
   訪問者は赤ちゃんより先に更新される（落とした item を同フレームで目標にできるように）。
   入れ替えると満足度経済と sim の指標が変わる
+- **`climbable` は実行時に書き換わる。** 配置コンボ（§12.3）の target は定義側が `climbableWhen: 'placement'` を持ち、
+  `updatePlacementCombos` が毎フレーム `climbable` を true/false に書き換える。**定義の `climbable` を見て判断してはいけない**
+- **面のハザード（zone）は点接触ではヒヤリにならない。** `findHiyariContact` は `o.zone === true` を除外し、
+  滞在は `baby.zoneDwell[id]` に溜まる。zone を接触判定に足すと二重にヒヤリが出る
+- **ヒヤリは 1 回 1 カウントとは限らない。** `obj.severity`（既定 1、窓・ベランダは 2）の分だけ `state.hiyari` が増える。
+  `hiyari >= 3` で失敗なので、`state.hiyari` を「件数」として扱うコードを書かない（件数は `hiyariEvents.length`）
 - **`boredUntil` が3つの意味で使い回されている**：(a) toy の飽き（`bored`/`unbored` effect あり）、
   (b) 登れる家具の飽き（effect なし）、(c) 口から手放した hazard/item の再取得防止（effect なし・`state` は `open` のまま）。
   (b)(c) を toy と同じに扱うと破綻する
@@ -197,7 +206,7 @@ assets/models/       glb 置き場      assets/audio/  効果音・BGM 置き場
 
 | 置き場所 | 内容 |
 |---|---|
-| `assets/models/<model>.glb` | `model` 名は `stages.js` の各オブジェクトの `model`（例 `outlet`）、対策後は `fixedModel`（例 `outlet_fixed`）、walls は `sofa` `tv_stand` `shelf` `counter` `island` `fridge`。Y-up、テクスチャ埋め込み、5,000ポリゴン以下 |
+| `assets/models/<model>.glb` | `model` 名は `stages.js` の各オブジェクトの `model`（例 `outlet`）、対策後は `fixedModel`（例 `outlet_fixed`）、walls は `sofa` `tv_stand` `shelf` `counter` `island` `fridge` `window` `balcony`。Y-up、テクスチャ埋め込み、5,000ポリゴン以下 |
 | `assets/models/baby.glb` | アニメーションクリップ名 `crawl` `idle` `stun` `play`（`fuss` `held` は省略可） |
 | `assets/audio/<name>.mp3` + `manifest.json` | `click` `fix_done` `trash` `play_done` `merge` `hiyari` `combo_warn` `deny` `pickup` `fuss` `respawn` `mouth` `relief` `climb` `fall_safe` `visitor` `cat` `clear` `fail` `bgm_main` `bgm_bored` |
 

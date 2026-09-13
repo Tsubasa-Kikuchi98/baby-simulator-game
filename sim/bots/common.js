@@ -60,8 +60,34 @@ export function findBaby(state, id) {
   return null;
 }
 
+/** push furniture (CONTRACT §12.3): draggable, but never a baby target and never dangerous on contact */
+export const isPushFurniture = (o) => o.weight === 'push';
+
+/** open hazards/items a baby can actually head to or be hurt by. Excludes push furniture (§12.3). */
 export function openHazards(state) {
-  return state.objects.filter((o) => isHazardLike(o) && isOpen(o));
+  return state.objects.filter((o) => isHazardLike(o) && isOpen(o) && !isPushFurniture(o));
+}
+
+/**
+ * Hazards the bot may plan an action for. Adds two §12 cases to openHazards:
+ *  - `inactive` (§12.2): not dangerous yet, but a player can and should fix it before it turns on
+ *  - push furniture (§12.3): not dangerous itself, but forms a climbing step next to a window
+ */
+export function plannableHazards(state) {
+  return state.objects.filter((o) => isHazardLike(o) && (o.state === 'open' || o.state === 'inactive'));
+}
+
+/** placement combos (§12.3) currently formed: a push mover close enough to a still-open target */
+export function activePlacements(state) {
+  const out = [];
+  for (const c of (state.stage && state.stage.placementCombos) || []) {
+    const mover = findObject(state, c.mover);
+    const target = findObject(state, c.target);
+    if (!mover || !target) continue;
+    if (mover.state === 'removed' || target.state !== 'open') continue;
+    if (dist(mover, target) < c.dist) out.push({ combo: c, mover, target });
+  }
+  return out;
 }
 
 /** combos (stage.combos) whose toy matches; returns hazard ids */

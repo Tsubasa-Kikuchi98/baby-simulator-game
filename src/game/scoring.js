@@ -24,13 +24,15 @@ export function groupHiyariCauses(state) {
       const o = state.objects.find(x => x.id === ev.objectId);
       // ingestible な toy（§11.4）は accident を持たないので誤飲として扱う
       const accident = o ? (o.accident ?? (o.ingestible ? '誤飲' : null)) : null;
-      g = { objectId: ev.objectId, label: o ? o.label : ev.objectId, accident, count: 0, combo: null };
+      // count は件数、weight は severity の合計（§12.3。結果画面が「◯◯ 1回（重大）」と出せる）
+      g = { objectId: ev.objectId, label: o ? o.label : ev.objectId, accident, count: 0, weight: 0, combo: null };
       byId.set(ev.objectId, g);
     }
     g.count++;
+    g.weight += typeof ev.severity === 'number' && ev.severity > 0 ? ev.severity : 1;
     if (ev.comboLabel && !g.combo) g.combo = ev.comboLabel;
   }
-  return [...byId.values()].sort((a, b) => b.count - a.count);
+  return [...byId.values()].sort((a, b) => b.weight - a.weight || b.count - a.count);
 }
 
 export function buildResult(state, cleared) {
@@ -58,14 +60,17 @@ export function interventionAmount(baby, kind, elapsed, tuning) {
 // ヒヤリの計上と effect（hiyari / combo_hiyari）。赤ちゃん側の処理（戻し・停止・手放し）は呼び出し側が行う。
 // extra は hiyari の payload に足す（§11.1 の飲み込みは { mouth: true }）
 export function registerHiyari(state, baby, obj, combo, effects, extra = {}) {
-  state.hiyari++;
+  // 重大なヒヤリ（CONTRACT §12.3）：object の severity（省略時 1）の分だけヒヤリを加算する。
+  // judge は hiyari >= 3 のままなので、窓からの転落（severity 2）は 1 回で実質致命的になる
+  const severity = typeof obj.severity === 'number' && obj.severity > 0 ? obj.severity : 1;
+  state.hiyari += severity;
   if (combo) state.comboHiyari++;
   if (!state.hiyariEvents) state.hiyariEvents = [];
-  state.hiyariEvents.push({ objectId: obj.id, babyId: baby.id, comboLabel: combo ? combo.label : null });
+  state.hiyariEvents.push({ objectId: obj.id, babyId: baby.id, comboLabel: combo ? combo.label : null, severity });
   effects.push({
     type: 'hiyari',
     objectId: obj.id,
-    payload: { babyId: baby.id, x: baby.x, y: baby.y, count: state.hiyari, combo: comboInfo(combo), ...extra }
+    payload: { babyId: baby.id, x: baby.x, y: baby.y, count: state.hiyari, severity, combo: comboInfo(combo), ...extra }
   });
   if (combo) {
     effects.push({

@@ -3,9 +3,11 @@
 // 飽きた toy は半透明＋「あきた」＋残り時間リング。重い hazard（動かせない家具）は床の台座＋鍵の印。
 // 収納済み（高い場所・収納先に置いた軽い hazard）は灰色＋✅（縮小は renderer が body.scale で行う）。
 // v5：ダミー（kind 'prop'）はベージュの平たい板、危険なおもちゃ（ingestible）は上にオレンジの「！」バッジ Sprite。
+// v6（§12）：面のハザード（zone）は床に貼る薄いスラブ（area の大きさ・上面は斜線テクスチャ）、
+// 押して動かせる家具（weight 'push'）は床に「押せる」リング、時限・滞在の残りは setAlertRing のリング Sprite。
 // 状態→見た目の判断は ThreeRenderer が行い、ここは setter を提供する。v3：進捗リングは持たない。
 import * as THREE from 'three';
-import { COLORS, makeTopTexture, makeSprite, RingTexture, disposeSprite } from './textures.js';
+import { COLORS, makeTopTexture, makeZoneTexture, makeSprite, RingTexture, disposeSprite } from './textures.js';
 import { buildShape, disposeShape } from './shapes.js';
 import { fitModel, disposeObject } from './assets.js';
 
@@ -15,6 +17,7 @@ export const GOODS_H = 12;                 // 安全グッズは平たい板
 export const BIN_H = 30;                   // 容れ物の高さ（蓋を除く）
 export const CUSHION_H = 8;                // 登れる家具（ソファ）の前縁のクッション
 export const PROP_H = 14;                  // ダミー（平たい板）
+export const ZONE_H = 2;                   // 面のハザード（床に貼る薄いスラブ）
 const boxGeo = new THREE.BoxGeometry(BOX_W, BOX_H, BOX_W);
 const cushionGeo = new THREE.BoxGeometry(28, CUSHION_H, 20);
 const goodsGeo = new THREE.BoxGeometry(BOX_W * 1.2, GOODS_H, BOX_W * 0.85);
@@ -25,6 +28,7 @@ const knobGeo = new THREE.SphereGeometry(2.6, 8, 6);
 const plateGeo = new THREE.BoxGeometry(BOX_W + 12, 2.5, BOX_W + 12);
 const discGeo = new THREE.CircleGeometry(17, 20);
 const glowGeo = new THREE.RingGeometry(21, 27, 36);
+const pushRingGeo = new THREE.RingGeometry(22, 26, 28);
 
 const KIND_STYLE = {
   hazard: { color: COLORS.hazard, top: COLORS.hazardTop },
@@ -54,7 +58,11 @@ export class ObjectView {
     this.isClimbable = !!def.climbable;   // 登れる家具：本体は壁（wall）で、object は前縁の小さなクッション（open の間だけ見せる）
     this.isProp = def.kind === 'prop';
     this.isRisky = def.kind === 'toy' && !!def.ingestible;
-    this.boxH = this.isGoods ? GOODS_H : (this.isBin ? BIN_H : (this.isClimbable ? CUSHION_H : (this.isProp ? PROP_H : BOX_H)));
+    this.isZone = def.zone === true;                   // 面のハザード（§12.1）。x,y は矩形の中心
+    this.isPush = def.weight === 'push';               // 押して動かせる家具（§12.3）。掴めるので鍵・台座は付けない
+    this.zoneW = this.isZone && def.area ? (def.area.w || 80) : 0;
+    this.zoneD = this.isZone && def.area ? (def.area.h || 80) : 0;
+    this.boxH = this.isZone ? ZONE_H : (this.isGoods ? GOODS_H : (this.isBin ? BIN_H : (this.isClimbable ? CUSHION_H : (this.isProp ? PROP_H : BOX_H))));
     this.labelH = this.isGoods ? GOODS_H + 16 : (this.isBin ? BIN_H + 30 : (this.isClimbable ? CUSHION_H + 14 : (this.isProp ? PROP_H + 16 : BOX_H + 24)));
 
     this.group = new THREE.Group();
@@ -66,7 +74,9 @@ export class ObjectView {
     this.group.add(this.body);
 
     this.sideMat = new THREE.MeshStandardMaterial({ color: style.color, roughness: 0.85, metalness: 0 });
-    this.topTex = makeTopTexture(this.isBin ? null : def.emoji, style.top);
+    this.topTex = this.isZone
+      ? makeZoneTexture(this.zoneW, this.zoneD, { open: true, emoji: def.emoji })
+      : makeTopTexture(this.isBin ? null : def.emoji, style.top);
     this.topMat = new THREE.MeshStandardMaterial({ map: this.topTex, roughness: 0.85, metalness: 0 });
     if (this.isBin) {
       // 容れ物：バケツ（側面 sideMat）＋ 蓋（lid グループ。ヒント中・捨てた直後に持ち上がる）
@@ -85,7 +95,9 @@ export class ObjectView {
       this.body.add(this.lid);
     } else {
       // BoxGeometry の面順: +x, -x, +y(top), -y, +z, -z
-      const geo = this.isGoods ? goodsGeo : (this.isClimbable ? cushionGeo : (this.isProp ? propGeo : boxGeo));
+      const geo = this.isZone ? new THREE.BoxGeometry(this.zoneW, ZONE_H, this.zoneD)
+        : (this.isGoods ? goodsGeo : (this.isClimbable ? cushionGeo : (this.isProp ? propGeo : boxGeo)));
+      if (this.isZone) this.zoneGeo = geo;
       this.box = new THREE.Mesh(geo, [this.sideMat, this.sideMat, this.topMat, this.sideMat, this.sideMat, this.sideMat]);
       this.box.position.y = this.boxH / 2;
       this.lid = null;
@@ -104,7 +116,7 @@ export class ObjectView {
         this.body.add(this.lid);
       }
     }
-    this.box.castShadow = true;
+    this.box.castShadow = !this.isZone;
     this.box.receiveShadow = true;
     this.box.userData.id = def.id;
     this.body.add(this.box);
@@ -116,18 +128,24 @@ export class ObjectView {
     this.shape = buildShape(def, this.sideMat);
     if (this.shape) {
       this.body.add(this.shape.group);
-      this._hideBoxKeepPicking();
-      if (this.lid && !this.isBin) this.lid.position.y = this.shape.height;
+      if (this.isZone) {
+        // 面のハザードはスラブが本体。形状は中央のマーカーとしてスラブの上に載せるだけ
+        this.shape.group.position.y = ZONE_H;
+      } else {
+        this._hideBoxKeepPicking();
+        if (this.lid && !this.isBin) this.lid.position.y = this.shape.height;
+      }
     }
     // ラベル・✅・バッジの基準高さ。形状ごとに高さが違うので箱の固定値（BOX_H）ではなくここを使う
-    this.topH = this.shape ? this.shape.height
-      : (this.isGoods ? GOODS_H : (this.isBin ? BIN_H : (this.isClimbable ? CUSHION_H : (this.isProp ? PROP_H : BOX_H))));
+    this.topH = this.isZone ? (ZONE_H + (this.shape ? this.shape.height : 0))
+      : (this.shape ? this.shape.height
+        : (this.isGoods ? GOODS_H : (this.isBin ? BIN_H : (this.isClimbable ? CUSHION_H : (this.isProp ? PROP_H : BOX_H)))));
     this.labelH = this.topH + 14;
 
     // 重い家具：床の暗い台座（据え付けの印）＋ 鍵の Sprite（未対策の間だけ）。登れる家具はクッションだけ（台座・鍵は無し）
     this.plate = null;
     this.lock = null;
-    if (this.isHeavy && !this.isClimbable) {
+    if (this.isHeavy && !this.isClimbable && !this.isZone) {
       this.plate = new THREE.Mesh(plateGeo, new THREE.MeshStandardMaterial({ color: COLORS.heavyPlate, roughness: 0.95, metalness: 0 }));
       this.plate.position.y = 1.25;
       this.plate.receiveShadow = true;
@@ -181,6 +199,18 @@ export class ObjectView {
     this.disc.visible = false;
     this.group.add(this.disc);
 
+    // 押して動かせる家具（§12.3）：床に薄い青のリング（掴める印。重い家具の鍵・台座とは別）
+    this.pushRing = null;
+    if (this.isPush) {
+      this.pushRing = new THREE.Mesh(pushRingGeo, new THREE.MeshBasicMaterial({ color: COLORS.push, transparent: true, opacity: 0.4, depthWrite: false, side: THREE.DoubleSide }));
+      this.pushRing.rotation.x = -Math.PI / 2;
+      this.pushRing.position.y = 0.7;
+      this.pushRing.renderOrder = 2;
+      this.group.add(this.pushRing);
+    }
+
+    this.alertRing = null;     // 滞在・時限の残り（§12.1 / §12.2）
+    this.alertRingTex = null;
     this.akita = null;         // 「あきた」Sprite
     this.boredRingTex = null;  // 飽きの残り時間リング
     this.boredRing = null;
@@ -242,6 +272,18 @@ export class ObjectView {
   _applyFixedLook() {
     const fixed = this.isFixed;
     this.check.visible = fixed;
+    if (this.isZone) {
+      // 面のハザード：open は警告色＋斜線、fixed は淡い緑（上面テクスチャを作り直す）
+      const tex = makeZoneTexture(this.zoneW, this.zoneD, { open: !fixed, emoji: this.def.emoji });
+      this.topMat.map = tex;
+      this.topMat.needsUpdate = true;
+      this.topTex.dispose();
+      this.topTex = tex;
+      this.sideMat.color.setHex(fixed ? COLORS.zoneFixed : COLORS.zoneOpen);
+      this.baseEmissive = { color: 0x000000, intensity: 0 };
+      this.setEmissive(null);
+      return;
+    }
     if (this.lock) this.lock.visible = !fixed;
     if (this.fixedModel) {
       this.fixedModel.visible = fixed;
@@ -312,6 +354,34 @@ export class ObjectView {
     if (this.boredRing) this.boredRing.visible = false;
   }
 
+  /**
+   * 警告リング（§12.1 の滞在割合・§12.2 の ON までの残り）。frac は 0..1。
+   * 面のハザードは矩形の中央の上、それ以外は本体の上に出す。
+   */
+  setAlertRing(frac, { blink = 0 } = {}) {
+    if (!this.alertRing) {
+      this.alertRingTex = new RingTexture({ color: COLORS.danger, track: COLORS.dangerTrack, lineWidth: 18, shadow: false });
+      this.alertRing = makeSprite(this.alertRingTex.texture, 20, 20, { renderOrder: 12 });
+      this.group.add(this.alertRing);
+    }
+    this.alertRing.position.set(this.isZone ? 0 : 16, this.topH + (this.isZone ? 26 : 12), this.isZone ? 0 : 8);
+    this.alertRingTex.update(Math.max(0, Math.min(1, frac)));
+    this.alertRing.material.opacity = 1 - 0.45 * blink;
+    this.alertRing.visible = true;
+  }
+
+  hideAlertRing() {
+    if (this.alertRing) this.alertRing.visible = false;
+  }
+
+  /** 押して動かせる家具の床リング（ドラッグ中・ホバー中は強く光らせる） */
+  setPushRing(k) {
+    if (!this.pushRing) return;
+    this.pushRing.material.opacity = 0.25 + 0.4 * Math.max(0, Math.min(1, k));
+    const sc = 1 + 0.05 * k;
+    this.pushRing.scale.set(sc, sc, 1);
+  }
+
   /** 合成 toy のグローを脈打たせる（毎フレーム） */
   setGlowPulse(t) {
     if (!this.glow) return;
@@ -361,6 +431,10 @@ export class ObjectView {
     disposeSprite(this.label);
     disposeSprite(this.boredRing);
     if (this.boredRingTex) this.boredRingTex.dispose();
+    disposeSprite(this.alertRing);
+    if (this.alertRingTex) this.alertRingTex.dispose();
+    if (this.pushRing) this.pushRing.material.dispose();
+    if (this.zoneGeo) this.zoneGeo.dispose();
     if (this.akita) { this.akita.material.dispose(); }    // texture は shared
     if (this.check) { this.check.material.dispose(); }
     if (this.lock) { this.lock.material.dispose(); }      // texture は shared

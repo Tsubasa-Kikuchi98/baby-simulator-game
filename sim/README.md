@@ -15,7 +15,7 @@ npm run sim:tune -- --n 60 --n2 40                         # faster, noisier swe
 
 Options (all scripts): `--seed` (first seed, default 1), `--tuning JSON` (merged over `TUNING`), `--workers k`
 (worker_threads; `run`/`assert` default 1, `tune` defaults to cores-1), `--quiet`.
-`--stage` is 1-based (`1` = キッチン, `2` = 双子, `1,2`, `all`). `--bot` is `noop|optimal|intervene_only|random|human_like|all`.
+`--stage` is 1-based (`1` = キッチン, `2` = 双子, `3` = 夕方のリビング, `1,2`, `all`). `--bot` is `noop|optimal|intervene_only|random|human_like|all`.
 
 ## Files
 

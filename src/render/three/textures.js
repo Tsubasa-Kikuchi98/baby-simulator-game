@@ -50,7 +50,13 @@ export const COLORS = {
   good: '#3f9a5a',
   bad: '#d05a5a',
   ring: '#ffffff',
-  ringTrack: 'rgba(0,0,0,0.18)'
+  ringTrack: 'rgba(0,0,0,0.18)',
+  // ---- v6（CONTRACT §12）
+  alert: 0xd94a4a, alertInk: '#8a2f2f',            // 面のハザード・配置コンボの警告色（数値は emissive 用）
+  zoneOpen: 0xe08a8a, zoneFixed: 0x9fc9a0,
+  inactive: 0xb9b2c4, inactiveInk: '#6a6380',      // 時限ハザード（まだ危険ではないが来る）
+  push: 0x8aa6d6, pushInk: '#3c4f78',              // 押して動かせる家具
+  siblingShirt: 0xe2a35c, siblingPants: 0x5b6b8a, siblingInk: '#6b4a22'
 };
 
 export function makeCanvas(w, h) {
@@ -321,9 +327,27 @@ export function makeFloorTexture(roomW, roomH) {
   ctx.lineWidth = 1.5;
   for (let y = 0; y <= roomH; y += 45) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(roomW, y); ctx.stroke(); }
   for (let x = 0; x <= roomW; x += 90) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, roomH); ctx.stroke(); }
+  // 中央のラグ（2D と同じ見た目。面のハザードの矩形と紛れないよう縁取り・内側の線・房を描く）
+  const rx = roomW / 2 - 130;
+  const ry = roomH / 2 - 80;
   ctx.fillStyle = COLORS.rug;
-  roundRect(ctx, roomW / 2 - 130, roomH / 2 - 80, 260, 160, 18);
+  roundRect(ctx, rx, ry, 260, 160, 18);
   ctx.fill();
+  ctx.strokeStyle = 'rgba(168, 130, 95, 0.45)';
+  ctx.lineWidth = 3;
+  roundRect(ctx, rx, ry, 260, 160, 18);
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  roundRect(ctx, rx + 10, ry + 10, 240, 140, 12);
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(168, 130, 95, 0.35)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let fy = ry + 14; fy < ry + 150; fy += 12) {
+    ctx.moveTo(rx - 6, fy); ctx.lineTo(rx, fy);
+    ctx.moveTo(rx + 260, fy); ctx.lineTo(rx + 266, fy);
+  }
+  ctx.stroke();
   const tex = canvasTexture(c, { mipmaps: true });
   return tex;
 }
@@ -345,6 +369,36 @@ export function makeMatTexture(w = 200, h = 40) {
   ctx.strokeStyle = '#5ea862';
   ctx.lineWidth = 3;
   ctx.strokeRect(1.5, 1.5, w - 3, h - 3);
+  return canvasTexture(c, { mipmaps: true });
+}
+
+/**
+ * 面のハザード（§12.1）の上面。open は警告色＋斜線、fixed は淡い緑。中央に絵文字。
+ * w:h は矩形と同じ比で渡す（テクスチャは最大 512px 相当に丸める）
+ */
+export function makeZoneTexture(w = 120, h = 100, { open = true, emoji = null } = {}) {
+  const S = Math.max(1, Math.min(4, Math.floor(512 / Math.max(w, h))));
+  const c = makeCanvas(Math.round(w * S), Math.round(h * S));
+  const ctx = c.getContext('2d');
+  ctx.scale(S, S);
+  ctx.fillStyle = open ? 'rgba(217, 74, 74, 0.30)' : 'rgba(143, 208, 143, 0.30)';
+  ctx.fillRect(0, 0, w, h);
+  if (open) {
+    ctx.strokeStyle = 'rgba(217, 74, 74, 0.40)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let i = -h; i < w; i += 14) { ctx.moveTo(i, h); ctx.lineTo(i + h, 0); }
+    ctx.stroke();
+  }
+  ctx.strokeStyle = open ? '#d94a4a' : '#5ea862';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(2, 2, w - 4, h - 4);
+  if (emoji) {
+    ctx.font = `${Math.round(Math.min(w, h) * 0.42)}px ${FONT_EMOJI}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(emoji, w / 2, h / 2);
+  }
   return canvasTexture(c, { mipmaps: true });
 }
 

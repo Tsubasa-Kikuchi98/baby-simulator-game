@@ -4,12 +4,23 @@ import { ROOM } from './stages.js';
 
 // ---- 生成 ---------------------------------------------------------------
 
+// 定義から初期 state を決める。時限ハザード（CONTRACT §12.2）は activeAt を持つ間 'inactive' で始まる
+function initialState(def) {
+  if (def.kind === 'toy' || def.kind === 'goods' || def.kind === 'container' || def.kind === 'prop') return 'available';
+  if (def.kind === 'hazard' && def.activeAt != null) return 'inactive';
+  return 'open';
+}
+
 export function createRuntimeObject(def) {
   const copy = JSON.parse(JSON.stringify(def));
   return {
     ...copy,
-    // toy: available|bored|removed / goods: available|used|removed / container: available（不変） / prop: available|removed / hazard,item: open|fixed|removed
-    state: def.kind === 'toy' || def.kind === 'goods' || def.kind === 'container' || def.kind === 'prop' ? 'available' : 'open',
+    // toy: available|bored|removed / goods: available|used|removed / container: available（不変） / prop: available|removed /
+    // hazard,item: open|fixed|removed（hazard は activeAt を持つ間 'inactive'）
+    state: initialState(def),
+    // 配置コンボ（CONTRACT §12.3）：climbableWhen:'placement' の hazard は踏み台が近いときだけ climbable になる
+    climbable: def.climbable === true,
+    placementCombo: null,        // 成立中の配置コンボ { id, label, moverId }。非成立なら null
     progress: 0,                 // 互換のため残す（長押し廃止で常に 0）
     respawnAt: null,
     boredUntil: null,
@@ -133,10 +144,41 @@ export function isToyPlayable(obj, state) {
 export function isDraggableOnFloor(obj) {
   if (!obj.draggable || obj.kind === 'container') return false;
   if (obj.carriedBy != null) return false;
+  // 押して動かす家具（CONTRACT §12.3）：hazard かつ weight 'push' で open のときだけ動かせる
+  if (obj.weight === 'push') return obj.kind === 'hazard' && obj.state === 'open';
   if (obj.kind === 'toy') return obj.state !== 'removed' && obj.playingBy == null;
   if (obj.kind === 'goods' || obj.kind === 'prop') return obj.state === 'available';
   if (obj.kind === 'hazard' || obj.kind === 'item') return obj.state === 'open';
   return false;
+}
+
+// ---- ステージ3 の新機構（CONTRACT §12）--------------------------------------
+
+// 面のハザード（§12.1）。矩形に滞在した時間でヒヤリになる。点接触ではヒヤリにしない
+export function isZone(obj) {
+  return !!obj && obj.zone === true;
+}
+
+// zone の滞在秒数（省略時 TUNING.ZONE_DWELL_DEFAULT）
+export function zoneDwellSec(obj, tuning) {
+  return typeof obj.dwellSec === 'number' && obj.dwellSec > 0 ? obj.dwellSec : tuning.ZONE_DWELL_DEFAULT;
+}
+
+// 点 (x,y) が zone の矩形（x,y は中心）の内側か
+export function pointInZone(x, y, obj) {
+  const w = (obj.area && obj.area.w) || 0;
+  const h = (obj.area && obj.area.h) || 0;
+  return Math.abs(x - obj.x) <= w / 2 && Math.abs(y - obj.y) <= h / 2;
+}
+
+// 押して動かす家具（§12.3）。heavy と light の中間：ドラッグできるが常に床に置かれる
+export function isPushable(obj) {
+  return !!obj && obj.weight === 'push';
+}
+
+// 踏み台があるときだけ登れる hazard（§12.3）。踏み台が離れている間は単体では危険でない
+export function isPlacementTarget(obj) {
+  return !!obj && obj.climbableWhen === 'placement';
 }
 
 // 口に入れる対象（CONTRACT §11.1）：誤飲の light な hazard/item、または ingestible:true の toy
@@ -264,6 +306,10 @@ export function allHazardsFixed(objects) {
 export function markFixed(obj, state, effects, payload = {}) {
   obj.progress = 0;
   obj.state = 'fixed';
+  // 再発する zone（§12.1）は、対策に使った goods を再発時に戻せるように覚えておく（CONTRACT §12.1 追補）
+  if (isZone(obj) && obj.respawnSec != null && payload.via === 'goods' && payload.goodsId != null) {
+    obj.fixedByGoodsId = payload.goodsId;
+  }
   effects.push({ type: 'fixed', objectId: obj.id, payload: { ...payload } });
   if (state.allHazardsFixedAt == null && allHazardsFixed(state.objects)) state.allHazardsFixedAt = state.timeLeft;
 }
@@ -293,6 +339,33 @@ export function updateObjects(state, effects) {
     if (o.kind !== 'toy') {
       // 登れる家具の「飽き」と、口から手放した hazard/item の「飽き」（§11.1）は静かに解除する（effect なし。候補判定は isBoredNow が見る）
       if (o.boredUntil != null && t >= o.boredUntil) o.boredUntil = null;
+      // 時限ハザード（§12.2）：activeAt 秒に inactive → open。fixed になった後は activate しない
+      if (o.state === 'inactive' && o.activeAt != null && t >= o.activeAt) {
+        o.state = 'open';
+        effects.push({ type: 'activate', objectId: o.id, payload: { activeAt: o.activeAt } });
+        continue;
+      }
+      // 面のハザードの再発（§12.1）：fixed になった時点で respawnAt を立て、時刻到達で open に戻す。
+      // 対策に使った goods（type 'fix' で 'used' になっている）も定義位置へ戻す（でないと二度と対策できない）
+      if (isZone(o) && o.respawnSec != null && o.state === 'fixed') {
+        if (o.respawnAt == null) o.respawnAt = t + o.respawnSec;
+        else if (t >= o.respawnAt) {
+          o.state = 'open';
+          o.respawnAt = null;
+          o.progress = 0;
+          effects.push({ type: 'respawn', objectId: o.id, payload: {} });
+          const goods = o.fixedByGoodsId != null ? findObject(state, o.fixedByGoodsId) : null;
+          o.fixedByGoodsId = null;
+          if (goods && goods.kind === 'goods' && goods.state === 'used') {
+            goods.state = 'available';
+            goods.progress = 0;
+            goods.carriedBy = null;
+            if (typeof goods.spawnX === 'number') { goods.x = goods.spawnX; goods.y = goods.spawnY; }
+            effects.push({ type: 'respawn', objectId: goods.id, payload: {} });
+          }
+        }
+        continue;
+      }
       if (o.state === 'removed' && o.respawnAt != null && t >= o.respawnAt) {
         // 捨てた／片付けた item も、元の定義位置に再発する
         o.state = 'open';

@@ -380,3 +380,196 @@ toy の `bored` 表示は「zzz」ではなく、toy を半透明にして **「
 - 猫がくわえる候補（`isCatTakeable`、`visitors.js`）：draggable、`carriedBy == null`、`playingBy == null`、state open/available/bored、ドラッグ中でない。目標が途中で拾われたら選び直す。落とす点は赤ちゃんの周囲 `CAT_DROP_NEAR_BABY` px で `isWalkable` な角度を最大 8 回試し、無ければ床スナップ。落とした後 `CAT_PAUSE_SEC`（TUNING、0.5）止まる。`CAT_STEALS` 回運ぶか候補が尽きたら `exit` へ
 - `updateVisitors(state, tuning, effects, dt, rng)`：猫は注入 rng を使う（決定的）。`visitor_leave` の猫のログは「ねこは出て行った」
 - sim ボット：`optimal`/`human_like` は `baby.mouthing != null` を見つけたら他の何よりも先に取り上げ長押し（ドラッグ中なら手放して次フレームに長押し）。高い場所は `highPlaceCount` が容量に達したものを避け、どこにも置けない軽い hazard/item は赤ちゃんから遠い床へ移す。prop は触らない。`random` は prop も含めて操作する
+
+## 12. 追補（v6）：ステージ3「夕方のリビング」と 4 つの新機構
+
+ユーザー要望（2026-09-13）。**キッチン（45秒）→ 双子（45秒）→ 夕方のリビング（60秒）** の 3 ステージ構成にする。
+難易度は物量ではなく **判断の質**（置き場所の選択・先読み・資源の配分）で上げる。この追補は §9〜§11 を上書きしない（追加のみ）。
+
+新機構は 4 つ。いずれも **ステージ3にしか登場しない**（stage 定義にフィールドが無ければ従来どおり動く）。
+
+> **決定論の絶対条件**：ステージ1・2 の `rng()` 呼び出し列を一切変えないこと。
+> 新機構は rng を使わない（zone・時限・配置コンボ）か、ステージ3にしか現れない訪問者（兄）の中でだけ使う。
+> `tests/game/determinism.test.js` と `npm run sim -- --stage 1,2` の既存シード結果が変わったら実装が誤っている。
+
+### 12.1 面のハザード（zone）
+
+矩形の範囲に **滞在した時間** でヒヤリになる hazard。接触（点）ではない。
+
+**定義**（`stages.js` の `zone()` ファクトリ）
+
+```js
+zone(id, label, accident, fix, emoji, x, y, { w, h, dwellSec, respawnSec })
+// → { id, kind:'hazard', zone:true, area:{w,h}, dwellSec, x, y（矩形の中心）,
+//     weight:'heavy', draggable:false, model:id, fixedModel:`${id}_fixed`, respawnSec }
+```
+
+**判定**（`baby.js`。rng を使わない）
+
+- 赤ちゃんの中心が矩形内（`|bx-x| <= w/2 && |by-y| <= h/2`）かつ zone が `open` の間、`baby.zoneDwell[id] += dt`
+- 矩形外に出たら `baby.zoneDwell[id] = 0`。zone が `fixed` の間は加算しない（拭いた水・ガードしたヒーターは安全）
+- `zoneDwell[id] >= dwellSec`（省略時 `TUNING.ZONE_DWELL_DEFAULT`）で **ヒヤリ**（`onHiyari`。赤ちゃんは spawn へ戻り `zoneDwell` は全消去）
+- 判定の位置：`updateBaby` の **接触判定（`findHiyariContact`）の直前**。抱っこ中・登り中・口に入れている間・stun 中は加算しない
+- `findHiyariContact` は `o.zone === true` を **除外**する（点接触ではヒヤリにしない）
+
+**目標選択**：zone は候補に含める。`targetWeight` の base は `TUNING.WEIGHT_ZONE`（0.8。toy 3.0・hazard 1.0 より低い）。
+狙って行く物ではなく「通り道として踏む」ことが本質なので低くする。
+
+**対策**：対応する goods を重ねる（`type:'fix'` レシピ）。zone は heavy なのでドラッグはできない。
+
+**再発**：`respawnSec` を持つ zone は `fixed` になった時点で `respawnAt = elapsed + respawnSec` を立て、
+`updateObjects` が時刻到達で `open` に戻す（`storedIn` は触らない、effect `respawn`）。
+※ 既存の再発（`state==='removed'` の item）とは別分岐。zone 以外の hazard には適用しない。
+
+**再発時の goods の復帰**（重要）：`type:'fix'` の goods は使うと `used` になって消えるため、そのままでは
+再発した zone を二度と対策できなくなる。zone を `fixed` にしたのが goods レシピだったときは、その goods の id を
+zone の実行時フィールド `fixedByGoodsId` に記録し、**再発の瞬間にその goods を `available` に戻して定義位置
+（`spawnX` / `spawnY`）へ戻す**（effect `respawn`（objectId = goods））。タオルやガードは使い回せる、という素直な解釈。
+`fixedByGoodsId` は zone が高い場所・収納で fixed になったときは立たない（zone は heavy なので実際には起きない）。
+
+**effect**：`zone_enter`（矩形に入った瞬間・1 回だけ。payload `{ babyId, dwellSec }`）。出たときの effect は出さない。
+滞在の進捗表示は state（`baby.zoneDwell`）から毎フレーム導出する（§12.6）。
+
+### 12.2 時限ハザード（activeAt）
+
+**定義**：hazard の `extra` に `activeAt: <秒>`。`createRuntimeObject` は `activeAt != null` のとき `state = 'inactive'` で作る。
+
+- `inactive` の間：接触してもヒヤリにならない（`findHiyariContact` は `open`/`fixed` しか見ないので自動）、
+  赤ちゃんの目標候補にならない（`isCandidate` が `open` を見るので自動）、combo も成立しない
+- `updateObjects` が `state === 'inactive' && elapsed >= activeAt` で `state = 'open'` にし、effect `activate` を出す
+- **ON になる前でも対策できる**（先回りが正解）。`recipes.js` の `type:'fix'` は hazard が
+  `open` **または `inactive`** のとき成立させる。`fixed` になった後は `activate` しない（`inactive` からの遷移のみ）
+- `allHazardsFixed` は従来どおり `state !== 'fixed'` を見るので、`inactive` は未対策として数える
+
+**予告**：`activeAt - elapsed <= TUNING.ACTIVATE_WARN_SEC`（3秒）を描画層が state から導出して点滅させる（effect ではない）。
+
+### 12.3 押して動かす家具（weight: 'push'）と配置コンボ
+
+**`weight: 'push'`**（`stages.js` の `pushable()` ファクトリ）
+
+- heavy と light の中間。`draggable: true` を明示的に持つ（`draggable = weight === 'light'` の自動導出は使わない）
+- `isDraggableOnFloor`：`kind==='hazard'` かつ `weight==='push'` かつ `state==='open'` ならドラッグ可
+- `resolveDrop`：push のものは **レシピ・容れ物・高い場所のいずれにも入らない**。常に床ドロップ（`snapToFloor`）
+- 赤ちゃんの目標にならない（`isCandidate` で `weight === 'push'` を除外）。`findHiyariContact` でも除外（当たっても何も起きない）
+- 猫は運べない（`isCatTakeable` が `weight === 'push'` を明示的に除外する）
+
+**配置コンボ**（`stage.placementCombos`）
+
+```js
+{ id, mover: <object id>, target: <object id>, dist: 90, label: '椅子 × 窓' }
+```
+
+- `combos.js` に `updatePlacementCombos(state, effects)` を追加し、`updateObjects` の直後・訪問者の前に毎フレーム呼ぶ
+- **成立条件**：mover と target がともに `removed` でなく、`target.state === 'open'`、`dist(mover, target) < c.dist`
+- 成立中、target の実行時フィールド `climbable` を `true` にする（定義側は `climbableWhen:'placement'` を持ち、初期 `climbable` は false）。
+  非成立になったら `climbable = false` に戻し、その target に登っている赤ちゃんは **その場で降ろす**（`leaveClimb` 相当。ヒヤリにしない）
+- 成立／非成立が切り替わった瞬間だけ effect `placement_warn`（objectId = target、payload `{ active, label, moverId }`）
+- target が `fixed`（補助錠をかけた）なら成立しない＝**根本対策**。mover を離しても成立しない＝**暫定対策**。この二択が狙い
+
+**重大なヒヤリ（severity）**
+
+- object 定義に `severity: 2`（省略時 1）。`registerHiyari` が `state.hiyari += (obj.severity ?? 1)` とし、
+  `hiyariEvents` の要素に `severity` を持たせる。`judge` は `hiyari >= 3` のまま（＝窓からの転落 1 回で実質致命的）
+- `groupHiyariCauses` の `count` は **件数**のまま。`severity` 合計を `weight` として各グループに持たせ、結果画面が「◯◯ 1回（重大）」と出せるようにする
+
+### 12.4 兄（`visitors[]` の `type:'sibling'`）
+
+```js
+{ id:'brother', type:'sibling', label:'お兄ちゃん', emoji:'🧒', at:4,
+  entry:{x,y}, home:{x,y}, litter:[<item 定義>], max:4 }
+```
+
+`at` 秒に `entry` から入り、**ステージ終了まで居座る**（`done` にならない）。速度 `TUNING.SIBLING_SPEED`、壁は無視、rng は注入 rng のみ。
+
+状態機械（1 フレームに 1 フェーズだけ進める。猫と同じ流儀）
+
+1. `wander`：`home` の周囲 `SIBLING_WANDER_R` px のランダムな点（rng）へ歩く。到達したら次の行動時刻 `nextActAt = elapsed + SIBLING_INTERVAL_SEC` まで `wander` を続ける
+2. `nextActAt` 到達かつ散らかした数 < `max` のとき、**散らかす先**を rng で決める
+   - `rng() < SIBLING_GIVE_PROB` → いずれかの赤ちゃん（rng）の周囲 `SIBLING_NEAR_BABY` px の床の点（猫の `pickDropPoint` と同じ手順）
+   - そうでなければ 部屋のランダムな床の点
+   `phase = 'toSpot'` でそこへ歩き、到達したら `litter[i % litter.length]` を床に置く
+   （`visitors.js` の `dropItem` を再利用。effect `visitor_drop`、`requestReselectAll`）。散らかした数 +1、`nextActAt` を更新して `wander` へ
+3. `busy`：プレイヤーが toy を兄にドロップすると `busyUntil = elapsed + SIBLING_BUSY_SEC`。
+   その間は動かず散らかさない。渡した toy は `carriedBy = 'brother'` で兄の足元に固定（＝赤ちゃんは使えない）。
+   `busyUntil` 到達で toy を床へ戻し（`carriedBy = null`、`draggedAt` 更新、`requestReselectAll`）、`wander` へ
+
+**toy を兄に渡す**（`drop.js`）：ドロップ判定の順序に **2. 訪問者** を挿入する。
+
+> 1. レシピ → **2. 訪問者** → 3. 容れ物 → 4. 高い場所 → 5. recipe_ng → 6. 床
+
+成立条件：A が `kind==='toy'` かつ `state==='available'`、ドロップ点 P から `DROP_COMBINE_DIST` 以内に
+`type==='sibling'` かつ `active` かつ busy でない訪問者がいる。effect `sibling_busy`（objectId = toy、payload `{ visitorId, until }`）。戻り値 `'sibling'`。
+busy 明けの effect は `sibling_free`（objectId = toy、payload `{ visitorId }`）。
+
+### 12.5 ステージ3 の内容
+
+`{ id:3, name:'夕方のリビング', timeLimit:60, babies:1, eduCardId:'burn' }`
+
+- **壁**：窓（左上）／カウンター（中央上・高い場所 capacity 1）／ベランダ（右上）／棚（左・capacity 2）／テレビ台（右・capacity 2）／ソファ（下）
+- **開始時点で配置コンボが 2 つとも成立している**（椅子が窓の前、収納ケースがベランダの前）。最初の判断がこれになる
+- **時限**：炊飯器の蒸気 `activeAt:16`、コンロ `activeAt:30`
+- **面**：こぼれた水（転倒・`respawnSec` あり）、ヒーターの前（やけど）
+- **訪問者**：兄（`at:4`、常駐）＋ 猫（`at:38`）
+- **combos**：スプーン × コンセント（`ignoresFix`）、ボール × 窓（`ALL_COMBOS` に追加）、布 × 洗剤ボトル
+- 教育カードは キッチン後 `battery`（ステージ1 にボタン電池があるため §9 から変更）、双子後 `combo`、リビング後 `burn`（炊飯器・コンロのやけど）、最終 `summary`。
+  転落専用カードは文言・出典が未確定のため作らない（§10-16 の要件。用意でき次第 `edu.js` に追加して差し替える）
+
+### 12.6 描画層・ログ・音（両フェーズ共通）
+
+`src/render/hints.js` に集約して両レンダラが共有する（片方だけに書かない）。
+
+| 追加する導出 | 内容 |
+|---|---|
+| `zoneRects(state)` | zone の矩形（`{ id, x, y, w, h, state }`）。`open` は警告色、`fixed` は淡色 |
+| `zoneDwellFraction(state, zoneId)` | 全赤ちゃんの `zoneDwell[zoneId] / dwellSec` の最大値 0..1。滞在リング用 |
+| `activationFraction(state, o)` | `inactive` の hazard が ON になるまでの残り割合。`ACTIVATE_WARN_SEC` 以内なら点滅 |
+| `placementWarnings(state)` | 成立中の配置コンボ `[{ moverId, targetId, label }]`。mover と target を線で結んで警告表示 |
+| `pushTargets(state)` | push をドラッグ中に「ここから離すと安全」を示すための target 一覧 |
+
+- `isDraggableOnFloor` 相当の見た目（掴めるカーソル）は push も対象にする
+- `inactive` の hazard は薄く描き、対策済みの見た目とは区別する（「まだ危険ではないが、来る」）
+- 新しい effect は **4 か所すべて** 更新する（`log.js` の `describeEvent`、`main.js` の `audioNameFor`、2D の `playEffect`、3D の `playEffect`）
+
+| effect | ログ（日本語） | 音（既存の音名を再利用。新規素材は追加しない） |
+|---|---|---|
+| `activate` | 「炊飯器の蒸気が熱くなった！」（bad） | `combo_warn` |
+| `zone_enter` | 「赤ちゃんがこぼれた水に入った」（bad） | `deny` |
+| `placement_warn` | active のとき「椅子 × 窓：踏み台になっている！」（bad）／解除は「椅子を窓から離した」（good） | active のとき `combo_warn`、解除は無音 |
+| `sibling_busy` | 「お兄ちゃんに積み木を渡した」（good） | `play_done` |
+| `sibling_free` | 「お兄ちゃんが積み木に飽きた」（bad） | 無音 |
+
+`log.js` の事故名の文言に `'転倒'` → 「ですべって転びそうになった！」を追加する。
+
+### 12.7 新しい TUNING（`stages.js`）
+
+```js
+// ---- ステージ3（CONTRACT §12）----
+WEIGHT_ZONE: 0.8,            // 面のハザードの目標選択 base（toy 3.0・hazard 1.0 より低い＝通り道として踏む）
+ZONE_DWELL_DEFAULT: 1.5,     // zone.dwellSec 省略時の滞在秒数
+ACTIVATE_WARN_SEC: 3,        // 時限ハザードの予告点滅（描画層が使う）
+SIBLING_SPEED: 110,          // 兄の歩く速さ px/s
+SIBLING_INTERVAL_SEC: 7,     // 散らかす間隔
+SIBLING_GIVE_PROB: 0.4,      // 赤ちゃんのそばに散らかす確率（残りは部屋のランダムな床）
+SIBLING_NEAR_BABY: 70,       // 赤ちゃんのそばに置くときの距離
+SIBLING_WANDER_R: 90,        // home の周囲をうろつく半径
+SIBLING_BUSY_SEC: 15,        // おもちゃを渡したときにおとなしくなる秒数
+BABY_SPEED_STAGE3: 78        // 98 から引き下げ（§12 は仕掛けで難しくする方針。最終値は sim で決める）
+```
+
+### 12.8 受け入れ条件
+
+- ステージ1・2 の既存シードの結果が **完全に一致**する（`tests/game/determinism.test.js`、`npm run sim -- --stage 1,2 --bot all`）
+- `node --test tests/game/*.test.js` が全件 pass（新機構のテストを追加する）
+- `npm run sim:assert` の例外ゼロ・最大フレーム < 50ms・同一シード2回一致がステージ3でも通る
+- 2D / 3D の両方でステージ3が最後まで遊べる（`npm run test:browser` / `test:browser3d`）
+
+**ステージ3の難易度目標**（`sim/assert.js` の `buildTargets` に追加済み。新ステージなので設計意図から定めた）
+
+| 指標 | 目標範囲 | 根拠 |
+|---|---|---|
+| `optimal` クリア率 | 0.85 〜 1.00 | 転落（severity 2）は完璧に近い操作でも 1 回のミスで致命的になるため、1・2 の 0.95 より低く置く |
+| `human_like` クリア率 | 0.25 〜 0.45 | ステージ2（0.35〜0.55）より明確に難しい。ただし丁寧に遊べば勝てる |
+| `human_like` playCount 中央値 | 2 以上 | 危険対応に追われて遊ばせられない＝満足度経済が破綻している状態を弾く |
+
+sim のボットも §12 に対応させた（`sim/bots/common.js` に `plannableHazards`（`inactive` を計画対象に含める）、
+`activePlacements`（成立中の配置コンボ）、`isPushFurniture`（push 家具は赤ちゃんの目標でも危険でもない）を追加）。

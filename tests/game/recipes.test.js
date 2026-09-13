@@ -306,9 +306,10 @@ test('result.hiyariCauses groups by object (count desc, combo label) and result.
   const s = game.state;
   assert.equal(s.screen, 'stageResult');
   const r = s.result;
+  // weight は severity の合計（CONTRACT §12.3）。通常の危険は severity 1 なので count と同じ
   assert.deepEqual(r.hiyariCauses, [
-    { objectId: 'table', label: 'テーブルの角', accident: '打撲', count: 2, combo: null },
-    { objectId: 'stairs', label: '階段', accident: '転落', count: 1, combo: null }
+    { objectId: 'table', label: 'テーブルの角', accident: '打撲', count: 2, weight: 2, combo: null },
+    { objectId: 'stairs', label: '階段', accident: '転落', count: 1, weight: 1, combo: null }
   ]);
   assert.ok(Array.isArray(r.log) && r.log.length >= 4);
   assert.equal(r.log[r.log.length - 1].kind, 'stage_fail');
@@ -358,8 +359,9 @@ test('every stage recipe references objects present in that stage, merged result
       }
     }
     for (const o of stage.objects) {
-      assert.ok(o.weight === 'light' || o.weight === 'heavy', `${o.id} weight`);
-      assert.equal(o.draggable, o.weight === 'light', `${o.id} draggable`);
+      // 'push'（CONTRACT §12.3）は heavy と light の中間：動かせるが高い場所・容れ物には入らない
+      assert.ok(o.weight === 'light' || o.weight === 'heavy' || o.weight === 'push', `${o.id} weight`);
+      assert.equal(o.draggable, o.weight === 'light' || o.weight === 'push', `${o.id} draggable`);
       if (o.kind === 'container') assert.equal(o.container, true);
     }
   }

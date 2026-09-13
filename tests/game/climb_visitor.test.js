@@ -84,7 +84,7 @@ test('fall from an open sofa is a hiyari with objectId sofa (転落): baby back 
   const e = game.state.log.find(x => x.kind === 'hiyari');
   assert.ok(e && e.text === 'ソファから落ちた！（転落）', e && e.text);
   assert.equal(e.tone, 'bad');
-  assert.deepEqual(game.state.hiyariEvents[0], { objectId: 'sofa', babyId: 'baby0', comboLabel: null });
+  assert.deepEqual(game.state.hiyariEvents[0], { objectId: 'sofa', babyId: 'baby0', comboLabel: null, severity: 1 });
 });
 
 test('mat → sofa fixes it (allHazardsFixedAt counts the sofa); a fall is then safe: no hiyari, climb_fall_safe, stun in front', () => {

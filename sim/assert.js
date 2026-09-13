@@ -29,8 +29,14 @@ export function buildTargets() {
     R('human_s2_play', 'human_like stage2 median playCount', [s(1, 'human_like')], (A) => A[s(1, 'human_like')].medianPlayCount, 2, Infinity, (v) => fmt(v, 1)),
     R('human_s1_combo', 'human_like stage1 combo hiyari rate', [s(0, 'human_like')], (A) => A[s(0, 'human_like')].comboHiyariRate, 0.30, 0.60),
     R('human_s2_combo', 'human_like stage2 combo hiyari rate', [s(1, 'human_like')], (A) => A[s(1, 'human_like')].comboHiyariRate, 0.30, 0.60),
-    R('human_satlow', 'human_like satLowRatio mean (both stages)', [s(0, 'human_like'), s(1, 'human_like')],
-      (A) => mean([0, 1].map((i) => A[s(i, 'human_like')].meanSatLowRatio)), 0.15, 0.40)
+    R('human_satlow', 'human_like satLowRatio mean (stages 1-2)', [s(0, 'human_like'), s(1, 'human_like')],
+      (A) => mean([0, 1].map((i) => A[s(i, 'human_like')].meanSatLowRatio)), 0.15, 0.40),
+    // ---- stage3 = 夕方のリビング (index 2, CONTRACT §12). New stage, so these ranges are set from the design
+    // intent: the hardest stage, but still winnable by a careful player. optimal is below 0.95 on purpose because
+    // 転落 (severity 2) can end a run from a single miss even with perfect play.
+    R('optimal_s3', 'optimal stage3(evening living) clear rate', [s(2, 'optimal')], (A) => A[s(2, 'optimal')].clearRate, 0.85, 1),
+    R('human_s3', 'human_like stage3(evening living) clear rate', [s(2, 'human_like')], (A) => A[s(2, 'human_like')].clearRate, 0.25, 0.45),
+    R('human_s3_play', 'human_like stage3 median playCount', [s(2, 'human_like')], (A) => A[s(2, 'human_like')].medianPlayCount, 2, Infinity, (v) => fmt(v, 1))
   ];
 }
 

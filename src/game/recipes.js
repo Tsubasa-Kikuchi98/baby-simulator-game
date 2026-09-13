@@ -50,7 +50,9 @@ export function applyDropRecipe(a, state, tuning, effects, p = { x: a.x, y: a.y 
       // goods → hazard。hazard が open のときだけ成立（既に fixed なら不成立）
       const goods = a.kind === 'goods' ? a : b.kind === 'goods' ? b : null;
       const hazard = goods === a ? b : a;
-      if (!goods || hazard.kind !== 'hazard' || hazard.state !== 'open') continue;
+      // 時限ハザード（CONTRACT §12.2）は ON になる前（'inactive'）でも対策できる＝先回りが正解
+      if (!goods || hazard.kind !== 'hazard') continue;
+      if (hazard.state !== 'open' && hazard.state !== 'inactive') continue;
       markFixed(hazard, state, effects, { via: 'goods', goodsId: goods.id });
       goods.state = 'used';
       goods.progress = 0;

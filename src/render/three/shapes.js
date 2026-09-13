@@ -276,8 +276,131 @@ const SHAPES = {
     for (const [x, z] of [[16, 0], [-16, 0], [0, 16], [0, -16]]) b.box(x ? 4 : 10, 5, x ? 10 : 4, 'main', { x, y: 2.5, z });
     b.box(28, 5, 28, 0xbfe0b8, { y: 7.5, ry: 0.12 });
     b.height = 10;
+  },
+  // ---- v6（CONTRACT §12）：ステージ3「夕方のリビング」
+  window: (b) => {                       // 窓：サッシ枠＋ガラス（薄い水色）＋クレセント錠。壁際に立てる
+    b.box(40, 34, 4, 0xbfd8e6, { y: 19, z: -6 });                    // ガラス
+    b.box(42, 3, 5, 'main', { y: 36, z: -6 });                       // 上枠
+    b.box(42, 3, 5, 'main', { y: 2.5, z: -6 });                      // 下枠
+    b.box(3, 34, 5, 'main', { y: 19, z: -6, x: -20 });
+    b.box(3, 34, 5, 'main', { y: 19, z: -6, x: 20 });
+    b.box(2, 34, 4.5, 'main', { y: 19, z: -5.6 });                   // 中桟
+    b.cyl(2.4, 2.4, 4, 0x9aa3ad, { y: 17, z: -2.5, rx: Math.PI / 2 });
+    b.height = 38;
+  },
+  balcony: (b) => {                      // ベランダ柵：手すり＋縦格子＋床のしきい
+    b.box(44, 3, 4, 'main', { y: 30, z: -6 });
+    b.box(44, 2.5, 4, 'main', { y: 16, z: -6 });
+    for (const x of [-18, -9, 0, 9, 18]) b.box(2.2, 30, 2.2, 'main', { x, y: 15, z: -6 });
+    b.box(46, 3, 12, 0xbfb2a4, { y: 1.5, z: -1 });
+    b.height = 32;
+  },
+  chair: (b) => {                        // 椅子：座面＋背もたれ＋脚4本（踏み台になる）
+    b.box(26, 3.5, 26, 'main', { y: 18 });
+    b.box(26, 20, 3, 'main', { y: 29, z: -11 });
+    for (const [x, z] of [[-10, -10], [10, -10], [-10, 10], [10, 10]]) b.box(3, 18, 3, 0x9a7b5c, { x, y: 9, z });
+    b.height = 40;
+  },
+  crate: (b) => {                        // 収納ケース：フタつきの箱＋帯（踏み台になる）
+    b.box(34, 24, 26, 'main', { y: 12 });
+    b.box(36, 3, 28, 0xe7dccd, { y: 25 });
+    b.box(35, 3, 27, 0x9a8f80, { y: 15.5 });
+    b.height = 27;
+  },
+  rice_cooker: (b) => {                  // 炊飯器：胴＋フタ＋蒸気口（湯気は particles / 2D の粒）
+    b.cyl(13, 14, 18, 'main', { y: 9 });
+    b.cyl(14, 14, 3.5, 0xf0e6dc, { y: 19.5 });
+    b.cyl(4, 4, 3, 0xd9dde2, { y: 22.5 });
+    b.box(10, 6, 1.5, 0x3a3338, { y: 10, z: 14 });                   // 操作パネル
+    b.height = 25;
+  },
+  stove: (b) => {                        // コンロ：天板＋五徳2口＋つまみ
+    b.box(40, 8, 30, 0x4a464f, { y: 4 });
+    for (const x of [-10, 10]) {
+      b.cyl(7, 7, 1.6, 0x2f2b33, { x, y: 8.6 });
+      b.torus(6.5, 1.1, 'main', { x, y: 9.6, rx: Math.PI / 2 });
+    }
+    b.cyl(2.4, 2.4, 3, 0xd9dde2, { y: 5, z: 16, rx: Math.PI / 2 });
+    b.height = 12;
+  },
+  puddle: (b) => {                       // こぼれた水（zone の中央マーカー）：平たい水面＋しずく
+    b.sph(13, { color: 0x8fc6e6, roughness: 0.15, metalness: 0.25 }, { y: 1.2, sy: 0.12, sz: 0.85 }, 16, 8);
+    b.sph(5, { color: 0xaddcf2, roughness: 0.15, metalness: 0.25 }, { x: 11, y: 1, z: 6, sy: 0.16 }, 10, 6);
+    b.height = 4;
+  },
+  heater: (b) => {                       // ヒーター（zone の中央マーカー）：本体＋前面グリル
+    b.box(34, 20, 14, 'main', { y: 10 });
+    for (const y of [7, 12, 17]) b.box(30, 2, 1.5, 0xffb27a, { y, z: 7.4 });
+    b.box(36, 2.5, 16, 0x8d7f76, { y: 1.2 });
+    b.height = 22;
+  },
+  towel: (b) => {                        // タオル：たたんだ層＋巻いた一本
+    for (let i = 0; i < 3; i++) b.box(26 - i * 3, 4, 18 - i * 2, 'main', { y: 2 + i * 4, ry: 0.08 * i });
+    b.cyl(4.5, 4.5, 20, 0xf2ede4, { y: 17, rz: Math.PI / 2 });
+    b.height = 21;
+  },
+  heater_guard: (b) => {                 // ヒーターガード：コの字の柵
+    b.box(36, 22, 2.5, 'main', { y: 11, z: -9 });
+    b.box(2.5, 22, 18, 'main', { y: 11, x: -17 });
+    b.box(2.5, 22, 18, 'main', { y: 11, x: 17 });
+    for (const x of [-8, 0, 8]) b.box(2, 18, 2, 0xf2ede4, { x, y: 11, z: -9 });
+    b.height = 24;
+  },
+  window_lock: (b) => {                  // まどの補助錠：サッシに付ける小さなレバー錠
+    b.box(12, 16, 7, 'main', { y: 8 });
+    b.box(5, 9, 4, 0xd9dde2, { y: 17, rz: 0.4 });
+    b.box(16, 3, 9, 0xf2ede4, { y: 1.5 });
+    b.height = 22;
   }
 };
+// 同じ形でよいもの（id 違いの複製）。SHAPES の定義後にまとめて割り当てる
+SHAPES.balcony_lock = SHAPES.window_lock;
+SHAPES.lock_b = SHAPES.lock;
+
+// ---------------------------------------------------------------- 壁（家具）の飾り
+// 壁は従来どおり箱（ThreeRenderer._makeWall）で、ここはその上に載せるディテールだけを作る。
+// 座標は**箱の中心**が原点（x: ±w/2、y: ±WALL_H/2、z: ±h/2）。glb が来たら箱ごと隠れる（mesh の子にする）。
+const WALL_SHAPES = {
+  window: (b, w, h, wh) => {             // 窓：白い枠とガラス（手前の面）
+    b.box(w - 16, wh - 16, 2, 0xd4e6f0, { y: 0, z: h / 2 + 1 });
+    b.box(w - 12, 4, 4, 0xf7f2e8, { y: wh / 2 - 8, z: h / 2 + 1 });
+    b.box(w - 12, 4, 4, 0xf7f2e8, { y: -wh / 2 + 8, z: h / 2 + 1 });
+    b.box(4, wh - 12, 4, 0xf7f2e8, { z: h / 2 + 1 });
+  },
+  balcony: (b, w, h, wh) => {            // ベランダ：手すりと縦格子
+    b.box(w - 8, 3, 4, 0xe7dccd, { y: wh / 2 + 2, z: h / 2 });
+    for (let x = -w / 2 + 14; x <= w / 2 - 14; x += 22) b.box(2.5, 14, 2.5, 0xe7dccd, { x, y: wh / 2 - 5, z: h / 2 });
+  },
+  counter: (b, w, h, wh) => {            // カウンター：天板の縁
+    b.box(w, 4, h + 6, 0xe7dccd, { y: wh / 2 + 1 });
+  },
+  shelf: (b, w, h, wh) => {              // 棚：横板2枚（手前の面）
+    for (const y of [-wh / 6, wh / 6]) b.box(w + 2, 3, h - 8, 0xbfa98a, { y });
+  }
+};
+
+WALL_SHAPES.tv_stand = (b, w, h, wh) => { // テレビ台：黒い画面
+  b.box(Math.min(w, h) * 0.2 + 6, wh * 0.6, 3, 0x2f2b33, { y: wh * 0.15, x: w > h ? 0 : w / 2 + 1, z: w > h ? h / 2 + 1 : 0, ry: w > h ? 0 : Math.PI / 2 });
+};
+WALL_SHAPES.sofa = (b, w, h, wh) => {     // ソファ：座面のクッション3つ
+  for (const x of [-w / 3, 0, w / 3]) b.box(w / 3.6, 8, h - 14, 0xe0b48f, { x, y: wh / 2 + 2 });
+};
+
+/**
+ * 壁（家具）の飾りを組み立てる。無ければ null。
+ * @param {object} wall stage.walls の要素
+ * @param {number} wallH 壁の高さ（箱の高さ）
+ * @returns {{ group, mats, geos } | null}  group は壁の箱（中心が原点）の子として add する
+ */
+export function buildWallShape(wall, wallH) {
+  const recipe = WALL_SHAPES[wall && wall.model];
+  if (!recipe) return null;
+  const b = new Builder(new THREE.MeshStandardMaterial({ color: 0xe7dccd, roughness: 0.8, metalness: 0 }));
+  b.mats.push(b.mainMat);
+  recipe(b, wall.w, wall.h, wallH);
+  return { group: b.group, mats: b.mats, geos: b.geos };
+}
+
 
 /**
  * def に対応する形状を組み立てる。レシピが無ければ null（ObjectView は従来の箱にフォールバック）。

@@ -4,10 +4,15 @@
 // 高い場所・収納先に置かれた hazard（小さく・灰色・✅）、重い家具の印（影＋鍵）、ドラッグ中のドロップ先ヒント。
 // v5（§11）：口に入れる（口元の物＋頭上の危険リング）、高い場所の容量 n/2（満杯は赤いヒント）、ダミー（ベージュの角丸）、
 // 危険なおもちゃの「！」バッジ、猫（低く速い 4 足。くわえた物を口元に）。
+// v6（§12）：面のハザード（床の矩形＋滞在ゲージ）、時限ハザード（薄く描いて予告点滅）、配置コンボ（mover と target を結ぶ警告線）、
+// 押して動かせる家具（push。掴める見た目＋「離すと安全」の円）、兄（🧒。渡したおもちゃを持って休む）。
 import { IRenderer } from '../IRenderer.js';
 import { ROOM, TUNING } from '../../game/stages.js';
 import { EffectStore, POP_SEC, POP_RISE_PX, POP_COLORS, easeOut } from './effects.js';
-import { hintTargets, hintWalls, boredFraction, isStored, isHeavy, findWall, highPlaceCount, wallCapacity, isHighPlaceFull } from '../hints.js';
+import {
+  hintTargets, hintWalls, boredFraction, isStored, isHeavy, findWall, highPlaceCount, wallCapacity, isHighPlaceFull,
+  isPushable, isFurnitureClimbable, zoneRects, zoneDwellFraction, activationFraction, placementWarnings, pushTargets
+} from '../hints.js';
 
 const FONT_UI = 'system-ui, "Hiragino Sans", "Noto Sans JP", sans-serif';
 const FONT_EMOJI = '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif';
@@ -23,7 +28,7 @@ const COLORS = {
   letterbox: '#2b2a33',
   floor: '#f4ebdd',
   floorLine: 'rgba(120, 90, 60, 0.07)',
-  rug: 'rgba(214, 180, 150, 0.25)',
+  rug: 'rgba(214, 180, 150, 0.25)', rugEdge: 'rgba(168, 130, 95, 0.40)', rugFringe: 'rgba(168, 130, 95, 0.30)',
   wall: '#cfae8e',
   wallEdge: '#a8825f',
   wallText: '#4d3b2c',
@@ -63,7 +68,14 @@ const COLORS = {
   mat: '#9fd7a0', matEdge: '#5ea862', matGrid: 'rgba(40, 90, 50, 0.16)', matInk: '#2f6b3a',
   cushion: '#e6bd97', cushionEdge: '#a8825f', cushionInk: '#6b4f3a',
   visitorShirt: '#5f6b8a', visitorShirtEdge: '#3d4761', visitorPants: '#3f4658', visitorSkin: '#f1d2b6', visitorInk: '#3d4761',
-  door: 'rgba(255, 250, 235, 0.9)'
+  door: 'rgba(255, 250, 235, 0.9)',
+  // v6（§12）
+  zoneOpen: 'rgba(217, 74, 74, 0.16)', zoneOpenEdge: '#d94a4a', zoneHatch: 'rgba(217, 74, 74, 0.22)', zoneInk: '#8a2f2f',
+  zoneFixed: 'rgba(143, 208, 143, 0.16)', zoneFixedEdge: '#5ea862', zoneFixedInk: '#2f6b3a',
+  inactive: '#b9b2c4', inactiveInk: '#6a6380',
+  push: '#8aa6d6', pushEdge: '#5470a8', pushInk: '#3c4f78',
+  placement: '#d94a4a', placementInk: '#8a2f2f',
+  siblingShirt: '#e2a35c', siblingShirtEdge: '#b47a37', siblingPants: '#5b6b8a', siblingInk: '#6b4a22'
 };
 const CLIMB_SCALE = 1.15;   // ソファの上の赤ちゃんは手前なので少し大きく
 const MAT_H = 40;           // マットの奥行き（ソファ前の床）
@@ -81,6 +93,9 @@ const GOODS_W = 46;        // 安全グッズ（タグ形）の幅
 const GOODS_H = 30;
 const BIN_W = 34;          // 容れ物（蓋つきゴミ箱）
 const BIN_H = 32;
+
+const SIBLING_SCALE = 0.72;   // 兄はおじさんより小さい（子ども）
+const SIBLING_HAND_H = 26;    // 兄の手の高さ（渡したおもちゃを持つ位置）
 
 const ZERO_LAYOUT = { w: 0, h: 0, scale: 1, offX: 0, offY: 0 };
 
@@ -214,6 +229,7 @@ export class Canvas2DRenderer extends IRenderer {
     for (const o of s.objects || []) {
       if (o.state === 'removed' || o.state === 'used') continue;
       if (o.carriedBy != null) continue;
+      if (o.zone) continue;              // 面のハザード（§12.1）は掴めない。床に載っている物の当たり判定を奪わないため
       if (isStored(o)) continue;
       const d = Math.hypot(o.x - p.x, o.y - p.y);
       if (d <= PICK_R_OBJ && d < bestD) { best = o.id; bestD = d; }
@@ -412,6 +428,55 @@ export class Canvas2DRenderer extends IRenderer {
         this.fx.addBurst(pos.x, pos.y, { count: 16, color: [COLORS.merged, '#ffffff'], life: 0.9, speed: 120, size: 4.5, star: true });
         break;
       }
+      // ---- v6（§12.6）。state から導出できるもの（zone の矩形・滞在割合・時限の残り・配置コンボの成立）は
+      // update() 側で毎フレーム描く。ここは「その瞬間に一度だけ起きたこと」だけ
+      case 'activate': {
+        // 時限ハザードが ON になった：湯気のような粒＋「熱くなった！」
+        this.fx.start('activate', objectId, 0.7);
+        if (obj) {
+          this.fx.addBurst(obj.x, obj.y - 6, { count: 14, color: COLORS.puff, life: 0.6, speed: 55, size: 3 });
+          this.fx.addPop(obj.x, obj.y - OBJ_R - 8, '熱くなった！', POP_COLORS.bad);
+        }
+        break;
+      }
+      case 'zone_enter': {
+        // 面のハザードに入った（滞在の進捗リングは state から毎フレーム描く）。入った合図だけ出す
+        this.fx.start('zoneenter', objectId, 0.6);
+        const b = payload.babyId != null && s ? s.babies.find(x => x.id === payload.babyId) : null;
+        if (b) this.fx.addPop(b.x, b.y - BABY_R - 26, '！', POP_COLORS.bad);
+        break;
+      }
+      case 'placement_warn': {
+        // 配置コンボの成立／解除。成立中の線と警告表示は state から毎フレーム描くので、ここは切り替わりの合図だけ
+        if (payload.active) {
+          // 成立中は毎フレームのリングと「踏み台！ 登れる」ラベルが出ているので、ポップは重ねない
+          this.fx.start('shake', objectId, 0.5);
+        } else if (obj) {
+          this.fx.addPop(obj.x, obj.y + OBJ_R + 18, '離れた', POP_COLORS.good);
+          this.fx.addBurst(obj.x, obj.y, { count: 8, color: COLORS.sparkle, life: 0.5, speed: 60, size: 2.6, star: true });
+        }
+        break;
+      }
+      case 'sibling_busy': {
+        // 兄におもちゃを渡した：兄の手元で sparkle
+        const vis = s && s.visitors ? s.visitors.find(v => v.id === payload.visitorId) : null;
+        if (vis) {
+          this.fx.addBurst(vis.x, vis.y - SIBLING_HAND_H, { count: 14, color: COLORS.sparkle, life: 0.7, speed: 80, size: 3, star: true });
+          this.fx.addPop(vis.x, vis.y - 46, 'わたした', POP_COLORS.good);
+        }
+        break;
+      }
+      case 'sibling_free': {
+        // 兄が飽きた：おもちゃが手元から床へ落ちる
+        const vis = s && s.visitors ? s.visitors.find(v => v.id === payload.visitorId) : null;
+        if (obj) {
+          const from = vis ? { x: vis.x, y: vis.y - SIBLING_HAND_H } : { x: obj.x, y: obj.y - SIBLING_HAND_H };
+          this.itemDrops = this.itemDrops.filter(d => d.id !== objectId);
+          this.itemDrops.push({ id: objectId, from, t: 0, dur: ITEM_DROP_SEC });
+        }
+        if (vis) this.fx.addPop(vis.x, vis.y - 46, 'あきた', POP_COLORS.bad);
+        break;
+      }
       default:
         // combo_warn / sat_delta / no_toy / stage_* は state から毎フレーム描く
         break;
@@ -492,8 +557,11 @@ export class Canvas2DRenderer extends IRenderer {
     if (stage) {
       const warn = this._comboWarnSets(state);
       warn.hints = hintTargets(state);
+      this._drawZones(ctx, state, warn);
       this._drawWalls(ctx, stage.walls || [], hintWalls(state), state);
       this._drawMats(ctx, state);
+      this._drawPushTargets(ctx, state);
+      this._drawPlacementLinks(ctx, warn);
       // ドラッグ中のものは最後（最前面）に描く
       let dragged = null;
       for (const o of state.objects || []) {
@@ -596,7 +664,11 @@ export class Canvas2DRenderer extends IRenderer {
         if (b.carrying) toys.add(b.carrying);
       }
     }
-    return { hazards, toys, on: Math.sin(this.t * 10) > 0 };
+    const placement = placementWarnings(state);
+    return {
+      hazards, toys, on: Math.sin(this.t * 10) > 0,
+      placement, placementTargets: new Set(placement.map(p => p.targetId))
+    };
   }
 
   _drawFloor(ctx) {
@@ -611,10 +683,175 @@ export class Canvas2DRenderer extends IRenderer {
     for (let x = 0; x <= ROOM.w; x += 90) {
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ROOM.h); ctx.stroke();
     }
-    // 中央のラグ
+    // 中央のラグ。面のハザード（§12.1）の矩形と紛れないよう、縁取り・内側の線・房で「敷物」だと分かるようにする
+    const rx = ROOM.cx - 130;
+    const ry = ROOM.cy - 80;
     ctx.fillStyle = COLORS.rug;
-    roundRect(ctx, ROOM.cx - 130, ROOM.cy - 80, 260, 160, 18);
+    roundRect(ctx, rx, ry, 260, 160, 18);
     ctx.fill();
+    ctx.strokeStyle = COLORS.rugEdge;
+    ctx.lineWidth = 3;
+    roundRect(ctx, rx, ry, 260, 160, 18);
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, rx + 10, ry + 10, 240, 140, 12);
+    ctx.stroke();
+    ctx.strokeStyle = COLORS.rugFringe;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let fy = ry + 14; fy < ry + 160 - 10; fy += 12) {
+      ctx.moveTo(rx - 6, fy); ctx.lineTo(rx, fy);
+      ctx.moveTo(rx + 260, fy); ctx.lineTo(rx + 266, fy);
+    }
+    ctx.stroke();
+  }
+
+  /**
+   * 面のハザード（§12.1）：床に矩形を描く。`open` は警告色の半透明＋斜線、`fixed` は淡色。
+   * 赤ちゃんが中にいる間は滞在割合（zoneDwellFraction）をリングとゲージで見せる。
+   * 対策後に再発する zone（こぼれた水）は、respawnAt が近づくと縁が点滅する。
+   */
+  _drawZones(ctx, state, warn) {
+    const elapsed = state.elapsed || 0;
+    for (const z of zoneRects(state)) {
+      const x = z.x - z.w / 2;
+      const y = z.y - z.h / 2;
+      const open = z.state === 'open';
+      const inactive = z.state === 'inactive';
+      const hinted = !!(warn && warn.hints && warn.hints.has(z.id));
+      const frac = open ? zoneDwellFraction(state, z.id) : 0;
+
+      ctx.save();
+      roundRect(ctx, x, y, z.w, z.h, 12);
+      ctx.save();
+      ctx.clip();
+      ctx.fillStyle = open ? COLORS.zoneOpen : COLORS.zoneFixed;
+      if (inactive) ctx.globalAlpha = 0.5;
+      ctx.fillRect(x, y, z.w, z.h);
+      if (open) {
+        // 斜線（危険の面であることを床の模様と区別する）
+        ctx.strokeStyle = COLORS.zoneHatch;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        for (let i = -z.h; i < z.w; i += 14) {
+          ctx.moveTo(x + i, y + z.h);
+          ctx.lineTo(x + i + z.h, y);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // 縁：open は脈打つ実線、fixed は淡い破線。再発予告中は速く点滅
+      const respawnSoon = !open && z.obj.respawnAt != null && z.obj.respawnAt - elapsed <= TUNING.RESPAWN_WARN_SEC;
+      const pulse = 0.5 + 0.5 * Math.sin(this.t * (respawnSoon ? 12 : 4));
+      ctx.strokeStyle = open ? COLORS.zoneOpenEdge : COLORS.zoneFixedEdge;
+      ctx.lineWidth = open ? 2.5 : 2;
+      ctx.globalAlpha = open ? 0.45 + 0.4 * pulse : (respawnSoon ? 0.35 + 0.5 * pulse : 0.5);
+      if (!open) ctx.setLineDash([7, 6]);
+      roundRect(ctx, x, y, z.w, z.h, 12);
+      ctx.stroke();
+      ctx.restore();
+
+      // ドラッグ中のヒント（タオル → こぼれた水）：内側にもう一本、脈打つ破線
+      if (hinted) {
+        const k = 0.5 + 0.5 * Math.sin(this.t * 6);
+        ctx.save();
+        ctx.globalAlpha = 0.5 + 0.45 * k;
+        ctx.strokeStyle = COLORS.hint;
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 6]);
+        ctx.lineDashOffset = -this.t * 30;
+        ctx.shadowColor = COLORS.hint;
+        ctx.shadowBlur = 4 + 8 * k;
+        roundRect(ctx, x + 4, y + 4, z.w - 8, z.h - 8, 10);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 中央：絵文字＋ラベル（対策済みは ✅）
+      ctx.save();
+      ctx.globalAlpha = open ? 0.9 : 0.75;
+      this._drawEmoji(ctx, z.emoji, z.x, z.y - 6, 22);
+      ctx.restore();
+      this._drawLabel(ctx, z.label, z.x, z.y + 8, open ? COLORS.zoneInk : COLORS.zoneFixedInk);
+      if (!open && !inactive) this._drawEmoji(ctx, '✅', z.x + 20, z.y - 16, 16);
+
+      // 滞在の進捗（危険リングと足元のゲージ）
+      if (frac > 0) {
+        this._drawDangerRing(ctx, z.x, z.y - 30, 13, frac);
+        const gw = Math.min(z.w - 20, 90);
+        const gx = z.x - gw / 2;
+        const gy = z.y + z.h / 2 - 12;
+        ctx.save();
+        ctx.fillStyle = COLORS.dangerTrack;
+        roundRect(ctx, gx, gy, gw, 6, 3);
+        ctx.fill();
+        ctx.fillStyle = COLORS.danger;
+        roundRect(ctx, gx, gy, Math.max(2, gw * frac), 6, 3);
+        ctx.fill();
+        ctx.restore();
+      }
+      this._drawFixDone(ctx, z.x, z.y, z.id);
+    }
+  }
+
+  /** 成立中の配置コンボ（§12.3）：mover と target を警告色の破線で結び、中点にラベルを出す */
+  _drawPlacementLinks(ctx, warn) {
+    const list = (warn && warn.placement) || [];
+    if (!list.length) return;
+    const k = 0.5 + 0.5 * Math.sin(this.t * 8);
+    for (const p of list) {
+      const dx0 = p.target.x - p.mover.x;
+      const dy0 = p.target.y - p.mover.y;
+      const len0 = Math.max(1, Math.hypot(dx0, dy0));
+      // ほとんど接している（＝両端のアイコンが隣り合っている）ときは線を描かない。target のリングで足りる
+      if (len0 - 2 * (OBJ_R + 14) < 10) continue;
+      ctx.save();
+      ctx.globalAlpha = 0.5 + 0.45 * k;
+      ctx.strokeStyle = COLORS.placement;
+      ctx.lineWidth = 3;
+      ctx.setLineDash([9, 6]);
+      ctx.lineDashOffset = -this.t * 40;
+      ctx.shadowColor = COLORS.dangerGlow;
+      ctx.shadowBlur = 6 + 8 * k;
+      // 両端をオブジェクトの縁で止める（アイコン・ラベルの上に線を重ねない）
+      const dx = p.target.x - p.mover.x;
+      const dy = p.target.y - p.mover.y;
+      const len = Math.max(1, Math.hypot(dx, dy));
+      const trim = Math.min(len / 2 - 1, OBJ_R + 14);
+      ctx.beginPath();
+      ctx.moveTo(p.mover.x + (dx / len) * trim, p.mover.y + (dy / len) * trim);
+      ctx.lineTo(p.target.x - (dx / len) * trim, p.target.y - (dy / len) * trim);
+      ctx.stroke();
+      ctx.restore();
+      // 中点のラベルは出さない：target のリングと短いラベル 1 つに集約する（壁ラベル・オブジェクト名との三重表示を避ける）
+    }
+  }
+
+  /** push をドラッグ中：「ここから離すと安全」の円（今は踏み台なら赤、離れていれば緑） */
+  _drawPushTargets(ctx, state) {
+    const list = pushTargets(state);
+    if (!list.length) return;
+    const k = 0.5 + 0.5 * Math.sin(this.t * 5);
+    for (const t of list) {
+      const danger = t.active;
+      ctx.save();
+      ctx.globalAlpha = (danger ? 0.55 : 0.4) + 0.3 * k;
+      ctx.strokeStyle = danger ? COLORS.placement : COLORS.hint;
+      ctx.fillStyle = danger ? COLORS.hintFullFill : COLORS.hintFill;
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([10, 7]);
+      ctx.lineDashOffset = -this.t * 25;
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, t.need, 0, Math.PI * 2);
+      ctx.globalAlpha *= 0.35;
+      ctx.fill();
+      ctx.globalAlpha = (danger ? 0.55 : 0.4) + 0.3 * k;
+      ctx.stroke();
+      ctx.restore();
+      if (t.fixed) continue;
+      this._drawLabel(ctx, danger ? 'この中は踏み台になる' : 'ここまで離せば安全', t.x, t.y + t.need + 2, danger ? COLORS.placementInk : COLORS.hintInk);
+    }
   }
 
   /**
@@ -716,12 +953,16 @@ export class Canvas2DRenderer extends IRenderer {
     }
     // 使い終わった安全グッズは消える（成立の演出は hazard 側と粒で出る）
     if (o.state === 'used') return;
-    // 赤ちゃんが持っている toy／口に入れている物は _drawBaby が、猫がくわえている物は _drawCat が描く
+    // 赤ちゃんが持っている toy／口に入れている物は _drawBaby が、猫がくわえている物は _drawCat が描く。
+    // 兄が持っているおもちゃ（carriedBy = 訪問者 id）は _drawSibling が描く
     if (o.carriedBy != null) return;
+    // 面のハザード（§12.1）は床の矩形として _drawZones が描く
+    if (o.zone) return;
     // 高い場所・収納先に置かれた hazard：小さく灰色に ✅
     if (isStored(o)) { this._drawStored(ctx, o, state); return; }
-    // 登れる家具（ソファ）：前縁の小さなクッション。fixed ならマット（_drawMats）に ✅
-    if (o.climbable) { this._drawClimbable(ctx, o, state, warn); return; }
+    // 登れる家具（ソファ）：前縁の小さなクッション。fixed ならマット（_drawMats）に ✅。
+    // 窓・ベランダのように配置コンボで一時的に climbable になるものはここでは扱わない（§12.3）
+    if (isFurnitureClimbable(o)) { this._drawClimbable(ctx, o, state, warn); return; }
 
     let x = o.x;
     let y = o.y;
@@ -779,7 +1020,13 @@ export class Canvas2DRenderer extends IRenderer {
     const isGoods = o.kind === 'goods';
     const isBin = o.kind === 'container';
     const isProp = o.kind === 'prop';
+    const isPush = isPushable(o);
     const heavyFurniture = o.kind === 'hazard' && isHeavy(o);
+    // 時限ハザード（§12.2）：まだ危険ではないが来る。薄く描き、ACTIVATE_WARN_SEC 以内は点滅させる
+    const actFrac = activationFraction(state, o);
+    const inactive = actFrac != null;
+    const actWarn = inactive && actFrac < 1;
+    const actBlink = 0.5 + 0.5 * Math.sin(this.t * 12);
 
     // 合成 toy：柔らかい金色のグロー（特別なものだと分かるように）
     if (o.merged) {
@@ -826,6 +1073,31 @@ export class Canvas2DRenderer extends IRenderer {
       ctx.restore();
     }
 
+    // 押して動かせる家具（§12.3）：床に脈打つ破線の楕円と左右の矢印。重い家具（鍵）と区別して「掴める」と伝える
+    if (isPush) {
+      const k = 0.5 + 0.5 * Math.sin(this.t * 4);
+      ctx.save();
+      ctx.globalAlpha = dragging ? 0.9 : 0.5 + 0.35 * k;
+      ctx.strokeStyle = COLORS.pushEdge;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 5]);
+      ctx.lineDashOffset = -this.t * 20;
+      ctx.beginPath();
+      ctx.ellipse(0, OBJ_R * 0.7, OBJ_R * 1.25, OBJ_R * 0.5, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineCap = 'round';
+      for (const dir of [-1, 1]) {
+        const ax = dir * (OBJ_R * 1.25 + 5);
+        ctx.beginPath();
+        ctx.moveTo(ax - dir * 4, OBJ_R * 0.7 - 4);
+        ctx.lineTo(ax + dir * 2, OBJ_R * 0.7);
+        ctx.lineTo(ax - dir * 4, OBJ_R * 0.7 + 4);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // 重い家具：濃く広い影（床に据え付けられている印）
     if (heavyFurniture || isBin) {
       ctx.save();
@@ -836,8 +1108,8 @@ export class Canvas2DRenderer extends IRenderer {
       ctx.restore();
     }
 
-    ctx.globalAlpha = bored ? 0.5 : 1;
-    ctx.fillStyle = fill;
+    ctx.globalAlpha = inactive ? (actWarn ? 0.4 + 0.4 * actBlink : 0.4) : (bored ? 0.5 : 1);
+    ctx.fillStyle = inactive ? COLORS.inactive : fill;
     ctx.strokeStyle = edge;
     ctx.lineWidth = 2;
     if (isGoods) {
@@ -877,11 +1149,35 @@ export class Canvas2DRenderer extends IRenderer {
     // 重い家具（未対策）：小さな鍵の印 →「動かせない。グッズで対策」
     if (heavyFurniture && o.state !== 'fixed') this._drawLock(ctx, -OBJ_R * 0.8, OBJ_R * 0.62, 8);
 
-    // ラベル（グッズは色付き文字で「道具」だと分かるように）
+    // ラベル（グッズは色付き文字で「道具」だと分かるように）。
+    // 壁（家具）と同じ model 名を持つ hazard（窓・ベランダ柵）は壁のラベルと二重になるので出さない
+    const onWall = !!findWall(state.stage, o.id);
+    const placementWarn = !!(warn.placementTargets && warn.placementTargets.has(o.id));
     if (isGoods) this._drawLabel(ctx, o.label, 0, GOODS_H / 2 + 4, COLORS.goodsInk);
     else if (isBin) this._drawLabel(ctx, o.label, 0, BIN_H / 2 + 4);
     else if (isProp) this._drawLabel(ctx, o.label, 0, PROP_H / 2 + 4, COLORS.propInk);
-    else this._drawLabel(ctx, o.label, 0, OBJ_R + 4);
+    else if (placementWarn) this._drawBadge(ctx, '踏み台！ 登れる', 0, OBJ_R + 20, COLORS.placementInk);
+    else if (!onWall) this._drawLabel(ctx, o.label, 0, OBJ_R + 4);
+
+    // 時限ハザード（§12.2）：残り時間の破線リングと「まもなく」。対策済みの見た目（緑＋✅）とは区別する
+    if (inactive) {
+      const remain = Math.max(0, (o.activeAt || 0) - (state.elapsed || 0));
+      ctx.save();
+      ctx.globalAlpha = actWarn ? 0.5 + 0.5 * actBlink : 0.6;
+      ctx.strokeStyle = actWarn ? COLORS.danger : COLORS.inactive;
+      ctx.lineWidth = actWarn ? 3 : 2;
+      ctx.setLineDash([5, 5]);
+      ctx.lineDashOffset = -this.t * 16;
+      ctx.beginPath();
+      ctx.arc(0, 0, OBJ_R + 7, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      this._drawLabel(ctx, actWarn ? `まもなく！ ${remain.toFixed(1)}秒` : `あと ${Math.ceil(remain)}秒`,
+        0, OBJ_R + 17, actWarn ? COLORS.zoneInk : COLORS.inactiveInk);
+    }
+
+    // 押して動かせる家具：ラベルの下に操作のヒント
+    if (isPush) this._drawLabel(ctx, '押せる', 0, OBJ_R + 17, COLORS.pushInk);
 
     // ✅（対策済み hazard）。ignoresFix の combo ヒヤリで一瞬揺れる
     if (o.kind === 'hazard' && o.state === 'fixed') {
@@ -897,6 +1193,21 @@ export class Canvas2DRenderer extends IRenderer {
     // combo 予告：同期点滅リング
     if (warn.hazards.has(o.id) || warn.toys.has(o.id)) this._drawComboRing(ctx, 0, 0, OBJ_R + 4, warn.on);
 
+    // 配置コンボ（§12.3）の target：踏み台になっている＝登れる。強い警告リングと文字
+    if (warn.placementTargets && warn.placementTargets.has(o.id)) {
+      const k = 0.5 + 0.5 * Math.sin(this.t * 8);
+      ctx.save();
+      ctx.globalAlpha = 0.55 + 0.45 * k;
+      ctx.strokeStyle = COLORS.placement;
+      ctx.lineWidth = 4;
+      ctx.shadowColor = COLORS.dangerGlow;
+      ctx.shadowBlur = 6 + 10 * k;
+      ctx.beginPath();
+      ctx.arc(0, 0, OBJ_R + 10 + 2 * k, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.restore();
 
     this._drawFixDone(ctx, x, y, o.id);
@@ -910,7 +1221,7 @@ export class Canvas2DRenderer extends IRenderer {
   /** マット：climbable な hazard が fixed のとき、家具の前の床に緑のジョイントマット（幅は家具と同じ、奥行き MAT_H） */
   _drawMats(ctx, state) {
     for (const o of state.objects || []) {
-      if (!o.climbable || o.state !== 'fixed') continue;
+      if (!isFurnitureClimbable(o) || o.state !== 'fixed') continue;
       const wl = this._climbWall(state.stage, o);
       const mx = wl.x;
       const my = wl.y + wl.h;
@@ -988,9 +1299,10 @@ export class Canvas2DRenderer extends IRenderer {
     this._drawFixDone(ctx, o.x, o.y, o.id);
   }
 
-  /** 訪問者。type で分岐：'cat' は低く速い 4 足（_drawCat）、それ以外（既定 'uncle'）は背の高い人型 */
+  /** 訪問者。type で分岐：'cat' は低く速い 4 足（_drawCat）、'sibling' は小さい人型（_drawSibling）、それ以外（既定 'uncle'）は背の高い人型 */
   _drawVisitor(ctx, v, state) {
     if (v.type === 'cat') { this._drawCat(ctx, v, state); return; }
+    if (v.type === 'sibling') { this._drawSibling(ctx, v, state); return; }
     const ph = this.visitorPhase.get(v.id) || 0;
     const bob = Math.abs(Math.sin(ph)) * 2.5;
     const dirX = v.dirX || 0;
@@ -1044,6 +1356,82 @@ export class Canvas2DRenderer extends IRenderer {
     ctx.restore();
 
     this._drawLabel(ctx, v.label || 'おじさん', v.x, v.y + 12, COLORS.visitorInk);
+  }
+
+
+  /**
+   * 兄（§12.4）：おじさんより小さい人型（🧒）。ステージ終了まで居座り、周期的に小物を散らかす。
+   * おもちゃを渡されている間（busyUntil > elapsed）は動かず、そのおもちゃを手元に持ち、
+   * 頭上に残り時間のリングを出す（＝いつまた散らかし始めるかが分かる）。
+   */
+  _drawSibling(ctx, v, state) {
+    const elapsed = state.elapsed || 0;
+    const busyLeft = v.busyUntil != null ? Math.max(0, v.busyUntil - elapsed) : 0;
+    const busy = busyLeft > 0;
+    const ph = this.visitorPhase.get(v.id) || 0;
+    const bob = busy ? Math.abs(Math.sin(this.t * 2)) * 1.2 : Math.abs(Math.sin(ph)) * 2.2;
+    const dirX = v.dirX || 0;
+    const swing = busy ? 0 : Math.sin(ph);
+
+    // 影
+    ctx.save();
+    ctx.fillStyle = COLORS.shadow;
+    ctx.globalAlpha = 0.2;
+    ctx.beginPath();
+    ctx.ellipse(v.x, v.y + 4, 14, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(v.x, v.y - bob);
+    ctx.scale(SIBLING_SCALE, SIBLING_SCALE);
+    ctx.rotate(Math.max(-1, Math.min(1, dirX)) * 0.05);
+    // 脚
+    ctx.fillStyle = COLORS.siblingPants;
+    roundRect(ctx, -10 + swing * 2, -8, 8, 14, 3);
+    ctx.fill();
+    roundRect(ctx, 2 - swing * 2, -8, 8, 14, 3);
+    ctx.fill();
+    // 体
+    ctx.fillStyle = COLORS.siblingShirt;
+    ctx.strokeStyle = COLORS.siblingShirtEdge;
+    ctx.lineWidth = 2;
+    roundRect(ctx, -14, -46, 28, 42, 10);
+    ctx.fill();
+    ctx.stroke();
+    // 腕
+    ctx.save();
+    ctx.translate(dirX >= 0 ? 12 : -12, -40);
+    ctx.rotate((dirX >= 0 ? 1 : -1) * swing * 0.3);
+    ctx.fillStyle = COLORS.siblingShirt;
+    roundRect(ctx, -3.5, 0, 7, 22, 3.5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = COLORS.visitorSkin;
+    ctx.beginPath();
+    ctx.arc(0, 24, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    // 頭（絵文字）
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath();
+    ctx.arc(0, -54, 13, 0, Math.PI * 2);
+    ctx.fill();
+    this._drawEmoji(ctx, v.emoji || '🧒', 0, -53, 26);
+    ctx.restore();
+
+    // 渡したおもちゃ（carriedBy = 訪問者 id）は手元に描く。_drawObject は carriedBy != null を描かない
+    if (v.carrying) {
+      const toy = (state.objects || []).find(x => x.id === v.carrying);
+      if (toy && toy.state !== 'removed') this._drawMiniObject(ctx, toy, v.x + 12, v.y - SIBLING_HAND_H - bob, MOUTH_SCALE);
+    }
+    // おとなしくしている残り時間（尽きると床に戻してまた散らかし始める）
+    if (busy) {
+      const total = Math.max(0.1, TUNING.SIBLING_BUSY_SEC || busyLeft);
+      this._drawRing(ctx, v.x, v.y - 52, 9, Math.max(0, Math.min(1, busyLeft / total)));
+      this._drawEmoji(ctx, '🎵', v.x + 16, v.y - 56, 14);
+    }
+    this._drawLabel(ctx, busy ? `${v.label || 'お兄ちゃん'}（あそび中）` : (v.label || 'お兄ちゃん'), v.x, v.y + 10, COLORS.siblingInk);
   }
 
   /**
@@ -1400,6 +1788,25 @@ export class Canvas2DRenderer extends IRenderer {
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#000';
     ctx.fillText(emoji, x, y);
+  }
+
+  /** 白地のバッジに乗せた文字（床の目地や線に負けない。配置コンボの警告など「読ませたい 1 行」用） */
+  _drawBadge(ctx, text, x, y, color = COLORS.placementInk) {
+    if (!text) return;
+    ctx.save();
+    ctx.font = `bold 11px ${FONT_UI}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    const w = ctx.measureText(text).width + 12;
+    ctx.fillStyle = 'rgba(255, 252, 246, 0.94)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, x - w / 2, y - 2, w, 16, 6);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y + 1);
+    ctx.restore();
   }
 
   _drawLabel(ctx, text, x, y, color = COLORS.label) {

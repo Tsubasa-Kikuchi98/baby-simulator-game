@@ -277,7 +277,9 @@ export function createUI({ container, game, onAction, audio = null, logContainer
     const causeList = (list) => {
       const ul = h('ul', 'events-list');
       for (const c of list) {
-        const li = h('li', null, `${c.label || c.objectId}${c.accident ? `（${c.accident}）` : ''}× ${c.count ?? 1}`);
+        const count = c.count ?? 1;
+        const severe = typeof c.weight === 'number' && c.weight > count;
+        const li = h('li', null, `${c.label || c.objectId}${c.accident ? `（${c.accident}）` : ''}× ${count}${severe ? '（重大）' : ''}`);
         if (c.combo) li.append(h('span', 'events-combo', `くみあわせ：${c.combo}`));
         ul.append(li);
       }

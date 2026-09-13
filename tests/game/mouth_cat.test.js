@@ -86,7 +86,7 @@ test('MOUTH_INGEST_PROB 1 → hiyari at until (objectId battery, payload.mouth),
   assert.equal(bat.boredUntil, null);
   assert.ok(Math.abs(bat.x - contact.x) < 1e-9 && Math.abs(bat.y - contact.y) < 1e-9, `battery ${bat.x},${bat.y}`);
   assert.ok(game.state.log.some(e => e.kind === 'hiyari' && e.text === 'ボタン電池を飲み込んだ！（誤飲）'));
-  assert.deepEqual(game.state.hiyariEvents[0], { objectId: 'battery', babyId: 'baby0', comboLabel: null });
+  assert.deepEqual(game.state.hiyariEvents[0], { objectId: 'battery', babyId: 'baby0', comboLabel: null, severity: 1 });
   assert.equal(ofType(fx, 'mouth_release').length, 0);
 });
 

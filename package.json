@@ -15,6 +15,7 @@
     "test:game": "node --test 'tests/game/**/*.test.js'",
     "test:browser": "node tests/browser.mjs",
     "test:browser3d": "node tests/browser3d.mjs",
+    "test:stage3": "npm run build && npm run build:3d && node tests/browser-stage3.mjs 2d && node tests/browser-stage3.mjs 3d",
     "check:pure": "grep -rnE 'document\\.|window\\.|canvas|CanvasRenderingContext|THREE|requestAnimationFrame|Math\\.random' src/game/ && echo 'NG: src/game references DOM/Canvas/Math.random' && exit 1 || echo 'OK: src/game is pure'"
   },
   "devDependencies": {

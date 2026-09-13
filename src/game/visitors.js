@@ -2,7 +2,10 @@
 // おじさん（type 'uncle'）：at 秒に path[0]（部屋の外）に現れ、VISITOR_SPEED で waypoint を順にたどり、最後の waypoint で退場する。
 //   path の全長を drops.length+1 等分した地点（入口・出口を除く）を通過した瞬間に drops[i] を床に落とす（runtime object を追加）。乱数は使わない。
 // 猫（type 'cat'）：at 秒に entry から入り、床の軽い物を CAT_STEALS 回くわえて赤ちゃんの近くへ運び、exit へ去る。選択は注入 rng（決定的）。
-// どちらも壁・オブジェクト・赤ちゃんとは衝突しない。DOM・Date は参照しない。
+// 兄（type 'sibling'、CONTRACT §12.4）：at 秒に entry から入り、ステージ終了まで居座って home のまわりをうろつき、
+//   SIBLING_INTERVAL_SEC ごとに小物を床に散らかす（max 回まで）。toy を渡されると SIBLING_BUSY_SEC の間おとなしくなる。選択は注入 rng。
+// いずれも壁・オブジェクト・赤ちゃんとは衝突しない。DOM・Date は参照しない。
+import { ROOM } from './stages.js';
 import { createRuntimeObject, snapToFloor, findObject, isWalkable } from './objects.js';
 import { weightedPick } from './rng.js';
 import { requestReselectAll } from './baby.js';
@@ -63,7 +66,17 @@ export function createVisitors(stage) {
       targetId: null,              // 猫：くわえに向かっている object id
       dropPoint: null,             // 猫：落とす位置 { x, y, babyId }
       pauseUntil: 0,
-      steals: 0                    // 猫：運んだ回数
+      steals: 0,                   // 猫：運んだ回数
+      // ---- 兄（§12.4）。他の訪問者では使わない ----
+      home: def.home ? { x: def.home.x, y: def.home.y } : entry,
+      litter: (def.litter || []).map(d => JSON.parse(JSON.stringify(d))),
+      max: typeof def.max === 'number' ? def.max : 0,
+      littered: 0,                 // 散らかした数
+      nextActAt: 0,                // 次に散らかす時刻
+      spot: null,                  // 散らかしに行く先
+      wanderPoint: null,           // うろつきの目的地
+      busyUntil: 0,                // toy を渡されておとなしくしている時刻まで
+      busyToyId: null              // 渡された toy の id（兄の足元に固定。赤ちゃんは使えない）
     };
   });
 }
@@ -123,6 +136,7 @@ const CAT_KINDS = new Set(['hazard', 'item', 'toy', 'prop', 'goods']);
 // 猫がくわえられる床の軽い物：draggable（light）、carriedBy なし、open/available/bored、ドラッグ中でない、遊ばれていない
 export function isCatTakeable(obj, state) {
   if (!obj || !CAT_KINDS.has(obj.kind) || !obj.draggable) return false;
+  if (obj.weight === 'push') return false;         // 押して動かす家具（§12.3）は猫には重すぎる
   if (obj.carriedBy != null || obj.playingBy != null) return false;
   if (obj.state !== 'open' && obj.state !== 'available' && obj.state !== 'bored') return false;
   if (state.drag && state.drag.targetId === obj.id) return false;
@@ -142,8 +156,8 @@ function pickCatTarget(state, rng) {
 }
 
 // 赤ちゃんの周囲 CAT_DROP_NEAR_BABY px の床の点（壁の外・部屋の中）。何度か角度を試し、だめなら床スナップ
-function pickDropPoint(state, tuning, rng, baby) {
-  const r = tuning.CAT_DROP_NEAR_BABY;
+function pickDropPoint(state, tuning, rng, baby, radius = null) {
+  const r = radius != null ? radius : tuning.CAT_DROP_NEAR_BABY;
   const walls = state.stage.walls;
   let first = null;
   for (let k = 0; k < 8; k++) {
@@ -259,11 +273,125 @@ function updateCat(v, state, tuning, effects, dt, rng) {
   }
 }
 
+// ---- 兄（§12.4）-----------------------------------------------------------------
+
+// home の周囲 SIBLING_WANDER_R px のランダムな床の点。だめなら床スナップ（猫の pickDropPoint と同じ流儀）
+function pickWanderPoint(state, tuning, rng, home) {
+  const walls = state.stage.walls;
+  let first = null;
+  for (let k = 0; k < 8; k++) {
+    const a = rng() * Math.PI * 2;
+    const r = tuning.SIBLING_WANDER_R * Math.sqrt(rng());
+    const p = { x: home.x + Math.cos(a) * r, y: home.y + Math.sin(a) * r };
+    if (!first) first = p;
+    if (isWalkable(p.x, p.y, walls, tuning.BABY_RADIUS)) return p;
+  }
+  return snapToFloor(first.x, first.y, walls, tuning);
+}
+
+// 部屋のランダムな床の点
+function pickRoomPoint(state, tuning, rng) {
+  const walls = state.stage.walls;
+  const pad = tuning.BABY_RADIUS + 6;
+  let first = null;
+  for (let k = 0; k < 8; k++) {
+    const p = { x: pad + rng() * (ROOM.w - pad * 2), y: pad + rng() * (ROOM.h - pad * 2) };
+    if (!first) first = p;
+    if (isWalkable(p.x, p.y, walls, tuning.BABY_RADIUS)) return p;
+  }
+  return snapToFloor(first.x, first.y, walls, tuning);
+}
+
+// 渡された toy を兄の足元に固定する
+function siblingCarry(v, state) {
+  if (v.busyToyId == null) return;
+  const o = findObject(state, v.busyToyId);
+  if (!o || o.carriedBy !== v.id) { v.busyToyId = null; return; }
+  o.x = v.x;
+  o.y = v.y;
+}
+
+// busy 明け：toy を床へ戻す（effect sibling_free）
+function siblingRelease(v, state, tuning, effects) {
+  const o = v.busyToyId != null ? findObject(state, v.busyToyId) : null;
+  v.busyToyId = null;
+  if (!o) return;
+  const q = snapToFloor(v.x, v.y, state.stage.walls, tuning);
+  o.x = q.x;
+  o.y = q.y;
+  if (o.carriedBy === v.id) o.carriedBy = null;
+  o.draggedAt = state.elapsed;
+  effects.push({ type: 'sibling_free', objectId: o.id, payload: { visitorId: v.id } });
+  requestReselectAll(state);
+}
+
+function updateSibling(v, state, tuning, effects, dt, rng) {
+  const t = state.elapsed;
+  const speed = tuning.SIBLING_SPEED;
+  if (!v.active) {
+    if (t < v.at) return;
+    v.active = true;
+    v.x = v.entry.x;
+    v.y = v.entry.y;
+    v.phase = 'wander';
+    v.wanderPoint = null;
+    v.nextActAt = t + tuning.SIBLING_INTERVAL_SEC;
+    effects.push({ type: 'visitor_enter', objectId: v.id, payload: { x: v.x, y: v.y, visitorType: v.type } });
+  }
+  // toy を渡されている間は動かず散らかさない
+  if (v.busyToyId != null) {
+    if (t < v.busyUntil) {
+      siblingCarry(v, state);
+      return;
+    }
+    siblingRelease(v, state, tuning, effects);
+    v.phase = 'wander';
+    v.wanderPoint = null;
+    v.nextActAt = t + tuning.SIBLING_INTERVAL_SEC;
+    return;
+  }
+  // 1 フレームに 1 フェーズだけ進める（猫と同じ流儀）
+  if (v.phase === 'toSpot') {
+    if (v.spot == null) { v.phase = 'wander'; return; }
+    if (runTo(v, v.spot.x, v.spot.y, speed, dt)) {
+      const def = v.litter.length ? v.litter[v.littered % v.litter.length] : null;
+      if (def) dropItem(v, def, state, tuning, effects, { x: v.x, y: v.y });
+      v.littered++;
+      v.spot = null;
+      v.phase = 'wander';
+      v.wanderPoint = null;
+      v.nextActAt = t + tuning.SIBLING_INTERVAL_SEC;
+    }
+    return;
+  }
+  // wander：時間が来たら散らかす先を決めて向かう
+  if (t >= v.nextActAt && v.littered < v.max && v.litter.length > 0) {
+    let p;
+    if (rng() < tuning.SIBLING_GIVE_PROB) {
+      const babies = state.babies;
+      const baby = babies.length ? babies[Math.min(babies.length - 1, Math.floor(rng() * babies.length))] : null;
+      p = baby ? pickDropPoint(state, tuning, rng, baby, tuning.SIBLING_NEAR_BABY) : pickRoomPoint(state, tuning, rng);
+    } else {
+      p = pickRoomPoint(state, tuning, rng);
+    }
+    v.spot = { x: p.x, y: p.y };
+    v.phase = 'toSpot';
+    return;
+  }
+  if (v.wanderPoint == null) {
+    v.wanderPoint = pickWanderPoint(state, tuning, rng, v.home);
+    return;
+  }
+  if (runTo(v, v.wanderPoint.x, v.wanderPoint.y, speed, dt)) v.wanderPoint = null;
+}
+
 export function updateVisitors(state, tuning, effects, dt, rng = null) {
   for (const v of state.visitors || []) {
     if (v.done) continue;
     if (v.type === 'cat') {
       if (rng) updateCat(v, state, tuning, effects, dt, rng);
+    } else if (v.type === 'sibling') {
+      if (rng) updateSibling(v, state, tuning, effects, dt, rng);
     } else {
       updateUncle(v, state, tuning, effects, dt);
     }

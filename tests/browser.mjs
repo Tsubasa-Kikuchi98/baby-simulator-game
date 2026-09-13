@@ -331,7 +331,8 @@ async function main() {
     check((await screenState(page)) === 'title', 'starts on title');
     const lead = await page.textContent('.lead');
     check(!/長押し/.test(lead || ''), `title lead does not mention 長押し (${(lead || '').slice(0, 40)}…)`);
-    check(/2ステージ/.test(lead || '') && /45秒/.test(lead || ''), `title lead says 45秒 × 2ステージ`);
+    // 3 ステージ構成（CONTRACT §12）。リード文は stages.js から組み立てられる（45秒・60秒 × 3ステージ）
+    check(/3ステージ/.test(lead || '') && /45秒/.test(lead || '') && /60秒/.test(lead || ''), `title lead says 45秒・60秒 × 3ステージ (${lead})`);
     await shot(page, '01-title');
     await page.click('button[data-action="start"]');
 
@@ -368,7 +369,7 @@ async function main() {
     check(/^\d+:\d\d$/.test((hudTime0 || '').trim()), `HUD time formatted m:ss (${hudTime0})`);
     check((hudHiyari0 || '').trim() === '○○○', `HUD hiyari starts at ○○○ (${hudHiyari0})`);
     const hudStage = await page.textContent('.hud-stage');
-    check(/1\/2/.test(hudStage || ''), `HUD shows stage 1/2 (${hudStage})`);
+    check(/1\/3/.test(hudStage || ''), `HUD shows stage 1/3 (${hudStage})`);
 
     // 重いもの（outlet）は引っ張っても動かない：state.drag は null のまま、位置も変わらない
     const outlet0 = await findObject(page, 'outlet');

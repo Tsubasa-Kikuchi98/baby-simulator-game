@@ -4,7 +4,8 @@
 import { ROOM } from '../../src/game/stages.js';
 import {
   dist, uniform, isHazardLike, isOpen, isFloorToy, isFloorGoods, isFloorLight, isContainer, findObject, findBaby,
-  openHazards, comboHazardIdsFor, insideWall, safeSpot, startDrag, nearestHighPlacePoint, nearestContainer, isMouthing
+  openHazards, comboHazardIdsFor, insideWall, safeSpot, startDrag, nearestHighPlacePoint, nearestContainer, isMouthing,
+  plannableHazards, activePlacements, isPushFurniture
 } from './common.js';
 
 // ---------------------------------------------------------------- noop
@@ -127,6 +128,14 @@ function createOptimalLike(rng, T, opts = {}) {
 
   /** the drag that neutralises hazard/item h, or null when nothing on the board can */
   function actionFor(state, h) {
+    // 押して動かせる家具（CONTRACT §12.3）：それ自体は危険ではない。窓／ベランダの踏み台になっているときだけ、離す
+    if (isPushFurniture(h)) {
+      const targets = activePlacements(state).filter((p) => p.mover.id === h.id).map((p) => p.target);
+      if (!targets.length) return null;
+      const to = safeSpot(state, targets, { minClear: 140, babyBonus: 0, avoid: state.objects.filter(isContainer) });
+      if (!to) return null;
+      return { kind: 'drag', targetId: h.id, to, key: `${h.id}>away`, hazardId: h.id };
+    }
     if (h.kind === 'hazard' && h.weight !== 'light') {
       const g = goodsFor(state, h);
       return g ? { kind: 'drag', targetId: g.id, to: { x: h.x, y: h.y }, key: `${g.id}>${h.id}`, hazardId: h.id } : null;
@@ -183,7 +192,8 @@ function createOptimalLike(rng, T, opts = {}) {
   }
 
   function planHazards(state) {
-    const open = openHazards(state);
+    // inactive（§12.2）と push 家具（§12.3）も計画対象に含める。どちらもステージ1・2 には存在しない
+    const open = plannableHazards(state);
     if (!open.length) return null;
     let best = null;
     for (const h of open) {

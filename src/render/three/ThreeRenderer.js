@@ -5,6 +5,8 @@
 // v3（§9）：オブジェクトの進捗リングは描かない（取り上げのリングだけ BabyView に残す）。容れ物、高い場所（highPlace の
 // wall 上面のヒント板）、収納済み hazard（壁の上・収納先の上に小さく灰色で ✅）、重い家具の台座＋鍵、捨てた絵文字の飛び。
 // v5（§11）：口に入れる（口元の物＋頭上の危険リング）、高い場所の容量 n/2（満杯は赤いヒント板）、ダミー、危険なおもちゃの「！」、猫（CatView）。
+// v6（§12）：面のハザード（床のスラブ＋滞在リング）、時限ハザード（薄く＋予告点滅）、配置コンボ（mover と target を結ぶ赤い線）、
+// 押して動かせる家具（床の青いリング＋「離すと安全」の円）、兄（小柄な VisitorView）。判断はここ、見た目の setter は *View。
 import * as THREE from 'three';
 import { IRenderer } from '../IRenderer.js';
 import { ROOM, TUNING } from '../../game/stages.js';
@@ -19,7 +21,11 @@ import { ObjectView, BOX_H } from './ObjectView.js';
 import { BabyView } from './BabyView.js';
 import { VisitorView, CatView } from './VisitorView.js';
 import { LabelLayer } from './labels.js';
-import { hintTargets, hintWalls, boredFraction, isStored, findWall, highPlaceCount, wallCapacity, isHighPlaceFull } from '../hints.js';
+import {
+  hintTargets, hintWalls, boredFraction, isStored, findWall, highPlaceCount, wallCapacity, isHighPlaceFull,
+  isPushable, isFurnitureClimbable, zoneRects, zoneDwellFraction, activationFraction, placementWarnings, pushTargets
+} from '../hints.js';
+import { buildWallShape, disposeShape } from './shapes.js';
 
 const WALL_H = 60;
 const MAT_D = 40;                        // マットの奥行き（家具の前の床）
@@ -76,6 +82,9 @@ export class ThreeRenderer extends IRenderer {
     this.babyFalls = new Map();         // babyId → { from: Vector3, to: Vector3|null, t, dur, kind: 'safe'|'hop'|'hiyari' }
     this.mouthStart = new Map();        // babyId → { start, until }（口に入れた時刻。危険リングの分母）
     this.walls = [];                    // { mesh, label, model }
+    this.placementLinks = new Map();    // 配置コンボ id → { line, geo, mat }（§12.3）
+    this.pushRings = new Map();         // target id → { mesh, geo, mat }（push ドラッグ中の「離すと安全」の円）
+    this.placementMarks = new Map();    // 配置コンボ target id → { ring, geo, mat, label }（床のリングと警告ラベル）
 
     this.stage = null;
     this.lastState = null;
@@ -202,12 +211,29 @@ export class ThreeRenderer extends IRenderer {
     this.mouthStart.clear();
     for (const w of this.walls) {
       disposeSprite(w.label);
+      if (w.deco) disposeShape(w.deco);
       w.mesh.geometry.dispose();
       w.mesh.material.dispose();
       if (w.hint) { w.hint.geometry.dispose(); w.hint.material.dispose(); }
       if (w.model) disposeObject(w.model);
     }
     this.walls = [];
+    for (const e of this.placementLinks.values()) {
+      if (e.line.parent) e.line.parent.remove(e.line);
+      if (e.band && e.band.parent) e.band.parent.remove(e.band);
+      e.geo.dispose(); e.mat.dispose();
+      if (e.bandGeo) e.bandGeo.dispose();
+      if (e.bandMat) e.bandMat.dispose();
+    }
+    this.placementLinks.clear();
+    for (const m of this.placementMarks.values()) {
+      if (m.ring.parent) m.ring.parent.remove(m.ring);
+      m.geo.dispose(); m.mat.dispose();
+      disposeSprite(m.label);
+    }
+    this.placementMarks.clear();
+    for (const e of this.pushRings.values()) { if (e.mesh.parent) e.mesh.parent.remove(e.mesh); e.geo.dispose(); e.mat.dispose(); }
+    this.pushRings.clear();
     if (this.stageGroup) {
       this.room.remove(this.stageGroup);
       this.stageGroup = null;
@@ -315,7 +341,11 @@ export class ThreeRenderer extends IRenderer {
       hint.visible = false;
       this.stageGroup.add(hint);
     }
-    const entry = { def: wall, mesh, label, model: null, hint, labelText: wall.label || '', labelFull: false };
+    // 壁の飾り（窓のガラス・ベランダの手すり等。箱の子にするので glb が来れば一緒に隠れる）
+    const deco = buildWallShape(wall, WALL_H);
+    if (deco) mesh.add(deco.group);
+
+    const entry = { def: wall, mesh, label, model: null, hint, deco, labelText: wall.label || '', labelFull: false };
     this.walls.push(entry);
     return entry;
   }
@@ -465,6 +495,7 @@ export class ThreeRenderer extends IRenderer {
     for (const o of s.objects || []) {
       if (o.state === 'removed' || o.state === 'used') continue;
       if (o.carriedBy != null) continue;
+      if (o.zone) continue;              // 面のハザード（§12.1）は床の模様。掴めず、上に載った物の当たり判定も奪わない
       if (isStored(o)) continue;
       const v = this.objects.get(o.id);
       if (v) objMeshes.push(v.pickMesh);
@@ -663,6 +694,61 @@ export class ThreeRenderer extends IRenderer {
         if (this.particles) this.particles.burst(this._v.set(p.x, BOX_H * 0.6, p.y), { count: 30, color: COLORS.merged, life: 0.9, size: 10 });
         break;
       }
+      // ---- v6（§12.6）。zone の矩形・滞在割合・時限の残り・配置コンボの成立は state から毎フレーム描くので、
+      // ここは「その瞬間に一度だけ起きたこと」だけ
+      case 'activate': {
+        // 時限ハザードが ON になった：湯気のような粒と「熱くなった！」
+        const v = this.objects.get(objectId);
+        if (v) {
+          if (this.particles) this.particles.burst(this._v.set(v.group.position.x, v.topH + 6, v.group.position.z), { count: 18, color: COLORS.puff, life: 0.6, size: 7 });
+          this._addPop(v.group.position.x, v.topH + 26, v.group.position.z, '熱くなった！', POP_COLORS.bad);
+        }
+        this.fx.start('activate', objectId, 0.7);
+        break;
+      }
+      case 'zone_enter': {
+        // 面のハザードに入った合図（滞在の進捗リングは毎フレーム）
+        const v = this.objects.get(objectId);
+        if (v && this.particles) this.particles.burst(this._v.set(v.group.position.x, 4, v.group.position.z), { count: 12, color: COLORS.alert, life: 0.5, size: 7 });
+        const b = payload.babyId != null ? this.babies.get(payload.babyId) : null;
+        if (b) this._addPop(b.group.position.x, 46, b.group.position.z, '！', POP_COLORS.bad);
+        break;
+      }
+      case 'placement_warn': {
+        // 配置コンボの成立／解除（線と警告は毎フレーム）
+        const v = this.objects.get(objectId);
+        if (!v) break;
+        const p = v.group.position;
+        if (payload.active) {
+          // 成立中は床のリングと「踏み台！ 登れる」ラベルが出ているので、ポップは重ねない
+          this.fx.start('shake', objectId, 0.5);
+        } else {
+          this._addPop(p.x, v.topH + 26, p.z, '離れた', POP_COLORS.good);
+          if (this.particles) this.particles.burst(this._v.set(p.x, v.topH * 0.6, p.z), { count: 14, color: COLORS.sparkle, life: 0.6, size: 7 });
+        }
+        break;
+      }
+      case 'sibling_busy': {
+        // 兄におもちゃを渡した：手元で sparkle
+        const vv = payload.visitorId != null ? this.visitors.get(payload.visitorId) : null;
+        if (vv) {
+          const hp = vv.handPosition ? vv.handPosition(new THREE.Vector3()) : vv.group.position.clone();
+          if (this.particles) this.particles.burst(this._v.copy(hp), { count: 18, color: COLORS.sparkle, life: 0.7, size: 8 });
+          this._addPop(vv.group.position.x, 70, vv.group.position.z, 'わたした', POP_COLORS.good);
+        }
+        break;
+      }
+      case 'sibling_free': {
+        // 兄が飽きた：おもちゃが手元から床へ落ちる
+        const vv = payload.visitorId != null ? this.visitors.get(payload.visitorId) : null;
+        if (obj) {
+          const v = this._ensureObject(obj);
+          const from = vv && vv.handPosition ? vv.handPosition(new THREE.Vector3()) : new THREE.Vector3(obj.x, 20, obj.y);
+          v.arc = { from, t: 0, dur: ITEM_DROP_SEC, rise: 0, puff: true };
+        }
+        if (vv) this._addPop(vv.group.position.x, 70, vv.group.position.z, 'あきた', POP_COLORS.bad);
+        break;
+      }
       default:
         // combo_warn / sat_delta / no_toy / fuss_end / stage_* / screen は state から毎フレーム描く
         break;
@@ -762,6 +848,8 @@ export class ThreeRenderer extends IRenderer {
       const warn = this._comboWarnSets(state);
       this._updateBabies(state, dt, warn);
       this._updateObjects(state, dt, warn);
+      this._updatePlacementLinks(state, warn);
+      this._updatePushRings(state);
       this._updateVisitors(state, dt);
       this._rememberBabies(state);
     } else {
@@ -858,11 +946,21 @@ export class ThreeRenderer extends IRenderer {
       let v = this.visitors.get(vis.id);
       if (!v) {
         if (!vis.active) continue;                 // まだ現れていない訪問者の View は作らない
-        v = vis.type === 'cat' ? new CatView(vis, this.shared) : new VisitorView(vis, this.shared);
+        v = vis.type === 'cat'
+          ? new CatView(vis, this.shared)
+          : (vis.type === 'sibling'
+            ? new VisitorView(vis, this.shared, { scale: 0.72, shirt: COLORS.siblingShirt, pants: COLORS.siblingPants, ink: COLORS.siblingInk })
+            : new VisitorView(vis, this.shared));
         (this.stageGroup || this.room).add(v.group);
         this.visitors.set(vis.id, v);
       }
       v.update(vis, dt);
+      // 兄（§12.4）：おもちゃに飽きるまでの残りをリングで出す。判断（時刻の比較）はここ、見せ方は View
+      if (v.setBusy) {
+        const left = vis.busyUntil != null ? vis.busyUntil - ((state && state.elapsed) || 0) : 0;
+        const total = TUNING.SIBLING_BUSY_SEC || 15;
+        v.setBusy(left > 0 ? Math.max(0, Math.min(1, left / total)) : null);
+      }
     }
     for (const id of [...this.visitors.keys()]) {
       if (!keep.has(id)) { this.visitors.get(id).dispose(); this.visitors.delete(id); }
@@ -897,7 +995,11 @@ export class ThreeRenderer extends IRenderer {
         if (b.carrying) toys.add(b.carrying);
       }
     }
-    return { hazards, toys, k: 0.5 + 0.5 * Math.sin(this.t * COMBO_PULSE) };
+    const placement = placementWarnings(state);
+    return {
+      hazards, toys, k: 0.5 + 0.5 * Math.sin(this.t * COMBO_PULSE),
+      placement, placementTargets: new Set(placement.map(p => p.targetId))
+    };
   }
 
   _updateBabies(state, dt, warn) {
@@ -1019,12 +1121,15 @@ export class ThreeRenderer extends IRenderer {
         continue;
       }
       g.visible = true;
-      v.setGhost(false);
+      // 時限ハザード（§12.2）：`inactive` の間は薄く（対策済みの緑＋✅ とは別物として見せる）
+      const actFrac = activationFraction(state, o);
+      const inactive = actFrac != null;
+      v.setGhost(inactive);
       const stored = isStored(o);
       v.setStored(stored);
       v.setFixed(o.kind === 'hazard' && o.state === 'fixed');
       // ---- 登れる家具（ソファ）：open の間は前縁のクッション、fixed なら家具の前の床にマット（✅ はマットの右端）
-      if (o.climbable) {
+      if (isFurnitureClimbable(o)) {
         const mat = this._ensureMat(o, state.stage);
         const fixedNow = o.state === 'fixed';
         mat.visible = fixedNow;
@@ -1058,14 +1163,15 @@ export class ThreeRenderer extends IRenderer {
         bodyScale = STORED_SCALE;
       } else if (carried) {
         const bv = this.babies.get(o.carriedBy);
-        const cv = bv ? null : [...this.visitors.values()].find(vv => vv.type === 'cat' && (vv.id === o.carriedBy || o.carriedBy === 'cat'));
+        // 猫（carriedBy === 'cat'）と兄（carriedBy === 訪問者 id。§12.4）
+        const cv = bv ? null : (this.visitors.get(o.carriedBy) || [...this.visitors.values()].find(vv => vv.type === 'cat' && o.carriedBy === 'cat'));
         const baby = bv ? (state.babies || []).find(bb => bb.id === o.carriedBy) : null;
         const inMouth = !!(baby && baby.mouthing && baby.mouthing.objectId === o.id);
         if (bv) {
           if (inMouth) bv.mouthPosition(this._v2); else bv.handPosition(this._v2);
           x = this._v2.x; y = this._v2.y; z = this._v2.z;
         } else if (cv) {
-          cv.mouthPosition(this._v2);
+          if (cv.mouthPosition) cv.mouthPosition(this._v2); else cv.handPosition(this._v2);
           x = this._v2.x; y = this._v2.y; z = this._v2.z;
         }
         bodyScale = inMouth || cv ? 0.55 : 0.75;
@@ -1121,8 +1227,10 @@ export class ThreeRenderer extends IRenderer {
         v.disc.scale.set(ds, ds, 1);
         v.disc.material.opacity = Math.max(0.08, 0.22 - y / 200);
       }
-      if (!o.climbable) {
-        v.label.visible = !carried;
+      if (!isFurnitureClimbable(o)) {
+        // 壁（家具）と同じ model 名を持つ hazard（窓・ベランダ柵）は壁ラベルと二重になるので出さない。
+        // 配置コンボ成立中はその代わりに _updatePlacementMark の警告ラベルが出る
+        v.label.visible = !carried && !findWall(state.stage, o.id);
         // ✅ とラベルは縮小した本体の高さに合わせる（収納済みは壁の上）。
         // v.topH は形状ごとの実高さ（shapes.js）。箱固定の BOX_H を使うと小さい物でラベルが浮く
         v.check.position.y = y + v.topH * bodyScale + 6;
@@ -1142,9 +1250,27 @@ export class ThreeRenderer extends IRenderer {
       const shake = this.fx.progress('shake', o.id);
       v.check.position.x = 15 * bodyScale + (shake != null ? Math.sin(shake * 40) * 5 * (1 - shake) : 0);
 
-      // ---- emissive：combo 予告（紫・同期点滅）> ドラッグのヒント（ティール・脈打つ）> 遊び開始（青・短く）
+      // ---- v6：押せる家具の床リング（ドラッグ中は強く）
+      if (v.pushRing) v.setPushRing(dragging ? 1 : 0.35 + 0.35 * pulse);
+
+      // ---- v6：面のハザードの滞在割合／時限ハザードの残り（どちらもリング。state から毎フレーム導出）
+      if (o.zone) {
+        const frac = o.state === 'open' ? zoneDwellFraction(state, o.id) : 0;
+        if (frac > 0) v.setAlertRing(frac); else v.hideAlertRing();
+      } else if (inactive) {
+        v.setAlertRing(actFrac, { blink: actFrac < 1 ? 0.5 + 0.5 * Math.sin(t * 12) : 0 });
+      } else {
+        v.hideAlertRing();
+      }
+
+      // ---- emissive：配置コンボ（赤・強い警告）> combo 予告（紫・同期点滅）> ドラッグのヒント（ティール・脈打つ）>
+      //                 時限の予告点滅（赤・薄く）> 遊び開始（青・短く）
       const ps = this.fx.progress('playstart', o.id);
-      if (warn.hazards.has(o.id) || warn.toys.has(o.id)) {
+      if (warn.placementTargets && warn.placementTargets.has(o.id)) {
+        v.setEmissive(COLORS.alert, 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 8)));
+      } else if (inactive && actFrac < 1) {
+        v.setEmissive(COLORS.alert, 0.2 + 0.5 * (0.5 + 0.5 * Math.sin(t * 12)));
+      } else if (warn.hazards.has(o.id) || warn.toys.has(o.id)) {
         v.setEmissive(COLORS.combo, 0.15 + 0.85 * warn.k);
       } else if (hints.has(o.id)) {
         v.setEmissive(COLORS.hint, 0.25 + 0.55 * (0.5 + 0.5 * Math.sin(t * 6)));
@@ -1164,6 +1290,120 @@ export class ThreeRenderer extends IRenderer {
     }
     this.particles.pruneOrbits(this._orbitKeep);
     this._orbitKeep.clear();
+  }
+
+  /**
+   * 成立中の配置コンボ（§12.3）：mover と target を赤い線で結ぶ。
+   * 成立／非成立は hints.placementWarnings（両レンダラ共有）から毎フレーム導出する。
+   */
+  _updatePlacementLinks(state, warn) {
+    const list = (warn && warn.placement) || [];
+    const active = new Set();
+    const k = 0.5 + 0.5 * Math.sin(this.t * 8);
+    for (const p of list) {
+      active.add(p.id);
+      let e = this.placementLinks.get(p.id);
+      if (!e) {
+        // 線（THREE.Line）は WebGL で太さを持てないので、
+        //  ・床に貼る帯（真上から見ても分かる）
+        //  ・その上を通す太い角柱（斜めから見ても分かる）
+        // の 2 つで「つながっている」ことを示す。どちらもトーンマッピングを切って色を落とさない
+        const geo = new THREE.BoxGeometry(1, 1, 1);
+        const mat = new THREE.MeshBasicMaterial({ color: COLORS.alert, transparent: true, opacity: 0.9, depthTest: false, toneMapped: false });
+        const bar = new THREE.Mesh(geo, mat);
+        bar.renderOrder = 8;
+        const bandGeo = new THREE.PlaneGeometry(1, 1);
+        const bandMat = new THREE.MeshBasicMaterial({ color: COLORS.alert, transparent: true, opacity: 0.5, depthWrite: false, toneMapped: false, side: THREE.DoubleSide });
+        const band = new THREE.Mesh(bandGeo, bandMat);
+        band.rotation.x = -Math.PI / 2;
+        band.renderOrder = 5;
+        (this.stageGroup || this.room).add(bar, band);
+        e = { line: bar, geo, mat, band, bandGeo, bandMat };
+        this.placementLinks.set(p.id, e);
+      }
+      const dx = p.target.x - p.mover.x;
+      const dz = p.target.y - p.mover.y;
+      const len = Math.max(1, Math.hypot(dx, dz));
+      const mx = (p.mover.x + p.target.x) / 2;
+      const mz = (p.mover.y + p.target.y) / 2;
+      const ry = Math.atan2(dx, dz);
+      e.line.position.set(mx, 26, mz);
+      e.line.rotation.set(0, ry, 0);
+      e.line.scale.set(9, 9, len);
+      e.mat.opacity = 0.6 + 0.35 * k;
+      e.line.visible = true;
+      e.band.position.set(mx, 1.4, mz);
+      e.band.rotation.set(-Math.PI / 2, 0, -ry);
+      e.band.scale.set(18, len, 1);
+      e.bandMat.opacity = 0.3 + 0.3 * k;
+      e.band.visible = true;
+      this._updatePlacementMark(p, k);
+    }
+    for (const [id, e] of this.placementLinks) {
+      if (active.has(id)) continue;
+      e.line.visible = false;
+      e.band.visible = false;
+    }
+    const activeTargets = new Set(list.map(p => p.targetId));
+    for (const [id, m] of this.placementMarks) {
+      if (activeTargets.has(id)) continue;
+      m.ring.visible = false;
+      m.label.visible = false;
+    }
+  }
+
+  /** 配置コンボの target（窓・ベランダ柵）：床の脈打つ赤いリングと「踏み台！ 登れる」ラベル（2D と同じ情報） */
+  _updatePlacementMark(p, k) {
+    let m = this.placementMarks.get(p.targetId);
+    if (!m) {
+      const geo = new THREE.RingGeometry(26, 36, 40);
+      const mat = new THREE.MeshBasicMaterial({ color: COLORS.alert, transparent: true, opacity: 0.7, depthWrite: false, depthTest: false, toneMapped: false, side: THREE.DoubleSide });
+      const ring = new THREE.Mesh(geo, mat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.renderOrder = 7;
+      const label = this.labelLayer.create('踏み台！ 登れる', { color: COLORS.alertInk, priority: 3 });
+      label.ownerId = p.targetId;
+      (this.stageGroup || this.room).add(ring, label);
+      m = { ring, geo, mat, label };
+      this.placementMarks.set(p.targetId, m);
+    }
+    const v = this.objects.get(p.targetId);
+    const h = v ? v.topH + 20 : 40;
+    m.ring.position.set(p.target.x, 1.8, p.target.y);
+    m.mat.opacity = 0.45 + 0.45 * k;
+    const sc = 1 + 0.08 * k;
+    m.ring.scale.set(sc, sc, 1);
+    m.ring.visible = true;
+    m.label.position.set(p.target.x, h, p.target.y);
+    m.label.visible = true;
+  }
+
+  /** push をドラッグ中：「ここから離すと安全」の円（踏み台になっていれば赤、離れていればティール） */
+  _updatePushRings(state) {
+    const list = pushTargets(state);
+    const active = new Set();
+    const k = 0.5 + 0.5 * Math.sin(this.t * 5);
+    for (const t of list) {
+      active.add(t.targetId);
+      let e = this.pushRings.get(t.targetId);
+      if (!e || e.need !== t.need) {
+        if (e) { if (e.mesh.parent) e.mesh.parent.remove(e.mesh); e.geo.dispose(); e.mat.dispose(); }
+        const geo = new THREE.RingGeometry(Math.max(2, t.need - 4), t.need, 48);
+        const mat = new THREE.MeshBasicMaterial({ color: COLORS.hint, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.set(t.x, 0.9, t.y);
+        mesh.renderOrder = 4;
+        (this.stageGroup || this.room).add(mesh);
+        e = { mesh, geo, mat, need: t.need };
+        this.pushRings.set(t.targetId, e);
+      }
+      e.mesh.position.set(t.x, 0.9, t.y);
+      e.mat.color.setHex(t.active ? COLORS.alert : COLORS.hint);
+      e.mat.opacity = (t.active ? 0.45 : 0.3) + 0.3 * k;
+      e.mesh.visible = true;
+    }
+    for (const [id, e] of this.pushRings) if (!active.has(id)) e.mesh.visible = false;
   }
 
   _updatePops(dt) {

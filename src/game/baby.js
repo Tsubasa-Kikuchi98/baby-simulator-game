@@ -3,7 +3,8 @@ import { ROOM } from './stages.js';
 import { weightedPick } from './rng.js';
 import {
   dist, clamp, isWalkable, snapToFloor, findObject, setBored,
-  isClimbable, isClimbBored, isBoredNow, isMouthable, climbWallFor, climbTopPoint, climbFrontPoint
+  isClimbable, isClimbBored, isBoredNow, isMouthable, climbWallFor, climbTopPoint, climbFrontPoint,
+  isZone, zoneDwellSec, pointInZone, isPushable, isPlacementTarget
 } from './objects.js';
 import { findCombo, comboTriggers } from './combos.js';
 import { interventionAmount, registerHiyari } from './scoring.js';
@@ -23,6 +24,7 @@ export function createBaby(index, spawn, baseSpeed, tuning) {
     climbing: null,             // 登っている家具の id（CONTRACT §10.1）。登っている間は移動・接触なし、anim 'climb'
     climbUntil: 0,              // 自分で降りる時刻（elapsed）
     mouthing: null,             // 口に入れている物 { objectId, until }（CONTRACT §11.1）。間は移動・接触・満足度減衰なし、anim 'mouth'
+    zoneDwell: {},              // 面のハザード（CONTRACT §12.1）の滞在秒数 { [zoneId]: sec }。矩形の外に出ると 0
     // ---- 動きの自然さ（CONTRACT §9.5）。描画層・sim は読み取りのみ ----
     moodMult: 1,                // 機嫌による速度倍率 1 + MOOD_SPEED_GAIN × ((100−sat)/100)^2
     speedK: 1,                  // 速度ゆらぎ係数（MOVE_SPEED_K_MIN..MAX）。speed = base × max(倍率) × speedK
@@ -64,6 +66,14 @@ export function isCandidate(obj, baby, state, others = otherTargets(baby, state)
   if (others.includes(obj.id)) return false;
   if (state.drag && state.drag.targetId === obj.id) return false;      // 大人の手の中にあるものは目標にしない
   if (obj.carriedBy != null && obj.carriedBy !== baby.id) return false; // 別の赤ちゃんの口の中・猫の口の中（§11.1, §11.5）
+  if (isPushable(obj)) return false;                                   // 押して動かす家具（§12.3）は目標にならない
+  // 踏み台があるときだけ登れる hazard（§12.3）。踏み台が離れている間は「登れない窓」で、
+  // combo が成立する toy を持っているときだけ目標になる（ボール × 窓）
+  if (isPlacementTarget(obj) && obj.climbable !== true) {
+    if (obj.state === 'removed') return false;
+    const combo = baby.carrying != null ? findCombo(state.stage, baby.carrying, obj.id) : null;
+    return !!(combo && comboTriggers(combo, obj.state));
+  }
   if (obj.climbable) {
     // 登れる家具（§10.1）：open でも fixed でも候補。飽きている間と、別の赤ちゃんが登っている間は候補外
     if (obj.state !== 'open' && obj.state !== 'fixed') return false;
@@ -106,6 +116,9 @@ export function targetWeight(obj, baby, state, tuning) {
     base = dragged ? Math.max(own, tuning.WEIGHT_TOY_DRAGGED) : own;
   } else if (obj.climbable) {
     base = tuning.CLIMB_WEIGHT;
+  } else if (isZone(obj)) {
+    // 面のハザード（§12.1）は「狙って行く物」ではなく「通り道として踏む物」なので base を低くする
+    base = tuning.WEIGHT_ZONE;
   } else {
     base = hazardBase(baby, tuning);
     // 持っている toy と combo が成立する hazard（open、または fixed+ignoresFix）は COMBO_ATTRACT 倍
@@ -504,15 +517,45 @@ function findHiyariContact(baby, state, tuning) {
     if (o.kind !== 'hazard' && o.kind !== 'item') continue; // toy / goods / container は接触判定しない
     if (o.state === 'removed') continue;
     if (o.climbable) continue;                                  // 登れる家具は接触でヒヤリにならない（findClimbContact）
+    if (isPushable(o)) continue;                                // 押して動かす家具（§12.3）は当たっても何も起きない
+    if (isZone(o)) continue;                                    // 面のハザード（§12.1）は滞在時間で判定する（点接触では起きない）
     if (state.drag && state.drag.targetId === o.id) continue;   // 大人が持ち上げているものには触れない
     if (o.carriedBy != null) continue;                          // 別の赤ちゃんの口の中・猫の口の中
     if (isBoredNow(o, state.elapsed)) continue;                 // 口から手放した直後（§11.1）
     if (dist(baby, o) >= tuning.TOUCH_DIST) continue;
     const combo = o.kind === 'hazard' ? findCombo(state.stage, baby.carrying, o.id) : null;
+    // 踏み台があるときだけ登れる hazard（§12.3）は、踏み台が無い間は単体の接触では危険でない（combo は従来どおり）
+    if (isPlacementTarget(o) && !combo) continue;
     if (o.state === 'open') return { obj: o, combo };
     if (o.state === 'fixed' && combo && comboTriggers(combo, o.state)) return { obj: o, combo };
   }
   return null;
+}
+
+// ---- 面のハザード（CONTRACT §12.1）------------------------------------------
+
+// 赤ちゃんが zone の矩形にとどまった時間を積み、dwellSec でヒヤリにする。乱数は使わない。
+// zone の無いステージ（1・2）ではループが何もしない。戻り値 true ならヒヤリが起きた（今フレームはここで終わり）
+function updateZoneDwell(baby, state, tuning, effects, dt) {
+  for (const o of state.objects) {
+    if (!isZone(o)) continue;
+    const inside = o.state === 'open' && pointInZone(baby.x, baby.y, o);
+    if (!inside) {
+      if (baby.zoneDwell[o.id]) baby.zoneDwell[o.id] = 0;
+      continue;
+    }
+    const prev = baby.zoneDwell[o.id] || 0;
+    if (prev <= 0) {
+      effects.push({ type: 'zone_enter', objectId: o.id, payload: { babyId: baby.id, dwellSec: zoneDwellSec(o, tuning) } });
+    }
+    const dwell = prev + dt;
+    baby.zoneDwell[o.id] = dwell;
+    if (dwell >= zoneDwellSec(o, tuning)) {
+      onHiyari(baby, { obj: o, combo: null }, state, tuning, effects);
+      return true;
+    }
+  }
+  return false;
 }
 
 // drop: 持っていた toy を落とす位置（省略時は赤ちゃんの現在地）。extra は hiyari payload への追加（§11.1 は {mouth:true}）
@@ -532,6 +575,7 @@ function onHiyari(baby, hit, state, tuning, effects, drop = null, extra = {}) {
   baby.playUntil = 0;
   baby.idleTarget = null;
   baby.needReselect = true;
+  baby.zoneDwell = {};          // 面のハザード（§12.1）の滞在は全消去
   resetStuck(baby);
 }
 
@@ -586,6 +630,15 @@ function leaveClimb(baby, obj, state, tuning) {
 function updateClimb(baby, state, tuning, rng, effects, dt) {
   const obj = findObject(state, baby.climbing);
   const t = state.elapsed;
+  // 配置コンボが解除された（踏み台を離した・補助錠をかけた）→ その場で降ろす。ヒヤリにはしない（§12.3）
+  if (obj && obj.state !== 'removed' && obj.climbable !== true) {
+    leaveClimb(baby, obj, state, tuning);
+    baby.anim = 'crawl';
+    effects.push({ type: 'climb_end', objectId: obj.id, payload: { babyId: baby.id } });
+    followCarried(baby, state);
+    updateComboWarn(baby, state, tuning, effects);
+    return true;
+  }
   if (!obj || obj.state === 'removed') {
     // 家具が無くなった（通常は起きない）：最寄りの床へ降りる
     const p = snapToFloor(baby.x, baby.y, state.stage.walls, tuning);
@@ -791,6 +844,13 @@ export function updateBaby(baby, state, tuning, rng, effects, dt) {
     baby.anim = baby.fussing ? 'fuss' : 'idle';
   }
   followCarried(baby, state);
+
+  // 面のハザード（§12.1）：接触判定の直前に滞在時間を積む。抱っこ中・登り中・口・stun 中はここに来ない
+  if (updateZoneDwell(baby, state, tuning, effects, dt)) {
+    followCarried(baby, state);
+    updateComboWarn(baby, state, tuning, effects);
+    return;
+  }
 
   // 接触判定。誤飲の軽い物（§11.1）は combo が成立しない限り即ヒヤリにせず口に入れる
   const hit = findHiyariContact(baby, state, tuning);

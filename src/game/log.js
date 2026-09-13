@@ -49,6 +49,7 @@ function hiyariVerb(accident) {
     case '指はさみ': return 'に指をはさみそうになった！';
     case 'やけど': return 'に触りそうになった！';
     case '窒息': return 'をかぶりそうになった！';
+    case '転倒': return 'ですべって転びそうになった！';
     default: return 'に手が届いた！';
   }
 }
@@ -166,6 +167,18 @@ export function describeEvent(effect, state) {
       return { text: `${visitorLabel(state, p.visitorId, 'ねこ')}が${name || 'なにか'}をくわえた`, tone: 'bad' };
     case 'cat_drop':
       return { text: `${visitorLabel(state, p.visitorId, 'ねこ')}が${name || 'なにか'}を赤ちゃんのそばに置いた`, tone: 'bad' };
+    // ---- ステージ3（§12）----
+    case 'activate':
+      return { text: `${name || 'それ'}が熱くなった！`, tone: 'bad' };
+    case 'zone_enter':
+      return { text: `赤ちゃんが${name || '危ないところ'}に入った`, tone: 'bad' };
+    case 'placement_warn':
+      if (p.active) return { text: `${p.label || 'それ'}：踏み台になっている！`, tone: 'bad' };
+      return { text: `${label(state, p.moverId)}を${name || 'そこ'}から離した`, tone: 'good' };
+    case 'sibling_busy':
+      return { text: `${visitorLabel(state, p.visitorId, 'お兄ちゃん')}に${name || 'おもちゃ'}を渡した`, tone: 'good' };
+    case 'sibling_free':
+      return { text: `${visitorLabel(state, p.visitorId, 'お兄ちゃん')}が${name || 'おもちゃ'}に飽きた`, tone: 'bad' };
     case 'stage_clear':
       return { text: 'クリア！', tone: 'good' };
     case 'stage_fail':

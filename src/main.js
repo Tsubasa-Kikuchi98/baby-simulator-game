@@ -42,6 +42,12 @@ function audioNameFor(type, payload) {
     case 'cat_drop': return 'cat';
     case 'stage_clear': return 'clear';
     case 'stage_fail': return 'fail';
+    // ---- ステージ3（§12.6）----
+    case 'activate': return 'combo_warn';
+    case 'zone_enter': return 'deny';
+    case 'placement_warn': return payload && payload.active ? 'combo_warn' : null;
+    case 'sibling_busy': return 'play_done';
+    case 'sibling_free': return null;
     default: return null;
   }
 }

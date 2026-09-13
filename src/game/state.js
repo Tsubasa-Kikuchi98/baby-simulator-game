@@ -13,6 +13,7 @@ import { judge, buildResult } from './scoring.js';
 import { resolveDrop } from './drop.js';
 import { appendLog } from './log.js';
 import { createVisitors, updateVisitors } from './visitors.js';
+import { updatePlacementCombos } from './combos.js';
 
 export function createGame({ rng = createRng(1), stages = STAGES, tuning = TUNING } = {}) {
   const state = {
@@ -235,6 +236,7 @@ export function createGame({ rng = createRng(1), stages = STAGES, tuning = TUNIN
 
     updatePress(dt, effects);
     updateObjects(state, effects);
+    updatePlacementCombos(state, effects);   // 配置コンボ（CONTRACT §12.3）。stage.placementCombos が無ければ何もしない
     updateVisitors(state, tuning, effects, dt, rng);
 
     let nt = countPlayableToys(state) === 0;

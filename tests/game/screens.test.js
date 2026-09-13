@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { newGame, DT, run, obj, baby, ofType, FROZEN, dragTo } from './helpers.js';
 
-// 2 ステージ構成（CONTRACT §9）：キッチン（45 秒、edu 'burn'）→ 双子（45 秒、edu 'combo'）→ finalResult
-test('title -> loading -> tutorial -> play(kitchen) -> stageResult -> loading -> play(twins) -> stageResult -> finalResult -> title', () => {
+// 3 ステージ構成（CONTRACT §9 / §12）：キッチン（45 秒、edu 'battery'）→ 双子（45 秒、edu 'combo'）
+// → 夕方のリビング（60 秒、edu 'burn'）→ finalResult
+test('title -> tutorial -> kitchen -> twins -> evening living -> finalResult -> title', () => {
   const game = newGame(1, FROZEN);
   const s = game.state;
   const screens = [];
@@ -33,7 +34,7 @@ test('title -> loading -> tutorial -> play(kitchen) -> stageResult -> loading ->
   collect(run(game, 45.1));
   assert.equal(s.screen, 'stageResult');
   assert.equal(s.result.cleared, true);
-  assert.equal(s.result.eduCardId, 'burn');
+  assert.equal(s.result.eduCardId, 'battery');
   assert.equal(s.result.score, 2000);
   assert.deepEqual(s.result.breakdown, { hiyariBonus: 2000, playBonus: 0, timeBonus: 0 });
   assert.equal(s.totalScore, 2000);
@@ -60,6 +61,21 @@ test('title -> loading -> tutorial -> play(kitchen) -> stageResult -> loading ->
   assert.equal(s.result.cleared, true);
   assert.equal(s.result.eduCardId, 'combo');
   assert.equal(s.totalScore, 4000);
+  game.dispatch({ type: 'next' });
+  assert.equal(s.screen, 'loading');
+  assert.equal(s.stageIndex, 2);
+  game.dispatch({ type: 'assetsReady' });
+  collect(run(game, 2.6));
+  assert.equal(s.screen, 'play');
+  assert.equal(s.stage.id, 3);
+  assert.equal(s.stage.name, '夕方のリビング');
+  assert.equal(s.babies.length, 1);
+  assert.equal(s.stage.timeLimit, 60);
+  collect(run(game, 60.1));
+  assert.equal(s.screen, 'stageResult');
+  assert.equal(s.result.cleared, true);
+  assert.equal(s.result.eduCardId, 'burn');
+  assert.equal(s.totalScore, 6000);
   game.dispatch({ type: 'next' }); // 最終ステージ → finalResult
   assert.equal(s.screen, 'finalResult');
   collect(game.update(DT));
@@ -72,6 +88,7 @@ test('title -> loading -> tutorial -> play(kitchen) -> stageResult -> loading ->
 
   assert.deepEqual(screens, [
     'title>loading', 'loading>tutorial', 'tutorial>play', 'play>stageResult',
+    'stageResult>loading', 'loading>play', 'play>stageResult',
     'stageResult>loading', 'loading>play', 'play>stageResult',
     'stageResult>finalResult', 'finalResult>title'
   ]);
@@ -123,7 +140,7 @@ test('startStage(index) enters play directly, fresh state, totalScore preserved;
   game.startStage(0, { skipLoading: false });
   assert.equal(s.screen, 'loading');
   assert.equal(s.loading.next, 'play');
-  assert.throws(() => game.startStage(2), /out of range/);
+  assert.throws(() => game.startStage(3), /out of range/);
 });
 
 test('score formula: hiyari, play and time bonus (hazards fixed by drag & drop)', () => {
