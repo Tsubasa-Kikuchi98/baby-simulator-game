@@ -80,7 +80,7 @@ Loading に入った瞬間、`pickTip(rng, state.shownTipIds)` で `state.tip` �
 | `drop` | toy/object id | `{ babyId, reason: 'bored'\|'next_toy'\|'hiyari'\|'takeaway'\|'mouth'\|'pickup' }`（v5：`'mouth'` は口に入れ始めて持ち toy を落とした、`'pickup'` は抱き上げで口の物が落ちた） |
 | `stage_clear` / `stage_fail` | null | `{ score, breakdown }` / `{ failAtSec }` |
 | `climb_start` / `climb_end` / `climb_fall_safe` | 家具（climbable hazard）id | `{ babyId }`（v4 §10.1。転落でヒヤリのときは通常の `hiyari`、objectId=家具 id） |
-| `visitor_enter` / `visitor_leave` | visitor id | `{ x, y }`（v4 §10.2） |
+| `visitor_enter` / `visitor_leave` | visitor id | `{ x, y }`（v4 §10.2）。`visitor_enter` は `visitorType`（`'uncle' | 'cat'`）も持つ |
 | `visitor_drop` | 落とした item id | `{ visitorId, x, y }`（v4 §10.2。item は `state.objects` に追加済み） |
 | `mouth_start` | 口に入れた object id | `{ babyId, until }`（v5 §11.1。`until` で飲み込む／手放すが決まる） |
 | `mouth_release` | object id | `{ babyId }`（v5 §11.1。手放した。物は足元、`boredUntil` が立つ） |
@@ -175,7 +175,7 @@ runtimeBaby = {
 - `src/ui.js`：HTML の HUD（残り時間／ヒヤリ ○○○／満足度バー（赤ちゃんごと）／ぐずり残秒バッジ／ステージ名／「あそべるものがない」アイコン／満足度バー横の数字ポップ）、Title / Loading / Tutorial / StageResult / FinalResult、combo ヒヤリの中央テキスト（1.5秒）。`ui.onEffect(type, objectId, payload)` と `ui.update(state)` を持つ
 - `src/input.js`：`createInput({ canvasEl, renderer, onEvent })`。mousedown → `pickObject` で対象決定、toy/baby は 6px 以上動いたらドラッグ、それ以外は長押し（`pressStart`）。mousemove 中に `pickObject` が対象 id と異なれば `pressEnd`。mouseup で `pressEnd` / `dragEnd`。ボットも同じ event 形式を `game.input` に渡す
 - 描画層は `toScreenCoords(x, y)`（ゲーム座標→クライアント座標）も実装する（Playwright テストが使う）。また `new Renderer({ topInset: 60 })` で HUD バンド分の上インセットを受け取り、部屋をその下に描く（`main.js` の `HUD_BAND_PX` と CSS `--hud-h` が同じ値）
-- `src/main.js`：`__GAME_MODE__`（vite define、'2d' | '3d'）で描画層・音声層を選び、`requestAnimationFrame` ループで `dt`（最大 1/20 秒にクランプ）を回し、`update` → effects 配布 → `renderer.update` → `ui.update`
+- `src/main.js`：`__GAME_MODE__`（vite define、'2d' | '3d'）で描画層を選び（音声層は 2d/3d とも `WebAudio`。AudioContext が使えなければ `SilentAudio`）、`requestAnimationFrame` ループで `dt`（最大 1/20 秒にクランプ）を回し、`update` → effects 配布 → `renderer.update` → `ui.update`
 
 ## 8. 追補（v2）：安全グッズ・レシピ・できごとログ・飽き表示
 

@@ -3,7 +3,7 @@
 家庭内事故（起きて動いている赤ちゃんの事故）の予防知識を、遊びながら得られるトップビュー・シミュレーションゲーム。
 仕様は [baby_safe_spec.md](baby_safe_spec.md)（v3.3）、モジュール間の契約は [docs/CONTRACT.md](docs/CONTRACT.md)。
 
-- フェーズ1：Vanilla JS + Canvas 2D、音なし、単一 `index.html` で配布
+- フェーズ1：Vanilla JS + Canvas 2D、単一 `index.html` で配布（効果音・BGM は合成音で鳴る）
 - フェーズ2：Three.js + Web Audio API（同じゲームロジック `src/game/` を共有）
 
 ## 起動手順
@@ -49,12 +49,19 @@ npm run build:3d         # フェーズ2：dist-3d/（three.js を含む）。np
 画面右の **できごとログ** に「ボタン電池を口に入れそうになった！（誤飲）」「洗剤ボトルを棚の上へ移した。届かない」のように原因と結果が一文で流れる。結果画面には失敗の原因の内訳が出る。
 ステージ・重さ・高い場所・レシピの定義は `src/game/stages.js`（`STAGES` / `ALL_RECIPES` / `MERGED_TOYS`）、ログ文言は `src/game/log.js`。
 
+## 音
+
+効果音と BGM は **フェーズ1・2 とも鳴ります**（HUD とタイトルの 🔈 でミュート。設定は localStorage に保存）。
+既定は `src/audio/webaudio.js` の合成音で、ブラウザの制約に従い **最初のクリックまで AudioContext を作りません**。
+3D ビルドでは `assets/audio/manifest.json` に名前を並べると、その name だけ音声ファイル再生に差し替わります
+（→ [assets/audio/README.md](assets/audio/README.md)）。BGM は満足度が下がると `bgm_bored` が `bgm_main` に重なります。
+
 ## ディレクトリ
 
 ```
 src/game/      ゲームロジック（DOM・Canvas・Three.js・Math.random を参照しない）
 src/render/    描画層  canvas2d/（フェーズ1） three/（フェーズ2）
-src/audio/     音声層  silent.js（フェーズ1） webaudio.js（フェーズ2・合成音フォールバック付き）
+src/audio/     音声層  webaudio.js（合成音。manifest があればファイル再生） silent.js（AudioContext 不可の環境）
 src/ui.js      HUD・各画面（HTML を重ねる）   src/input.js  マウス→操作イベント   src/main.js  ループ・DI
 sim/           ヘッドレス自動テストプレイ（§13）  tests/  単体テスト・Playwright
 assets/models  glb 置き場   assets/audio  効果音・BGM 置き場
@@ -93,7 +100,7 @@ npm run sim:tune -- --workers 6                        # §13.4：5 変数 × 3 
 |---|---|
 | `assets/models/<model>.glb` | 家具・オブジェクト。`model` 名は `src/game/stages.js` の各オブジェクトの `model`（例 `outlet`）、対策後は `fixedModel`（例 `outlet_fixed`）、walls は `sofa` `tv_stand` `shelf` `counter` `island` `fridge` |
 | `assets/models/baby.glb` | 赤ちゃん。アニメーションクリップ名 `crawl` `idle` `stun` `play`（`fuss` `held` は省略可） |
-| `assets/audio/<name>.mp3`（または .ogg） | `click` `fix_done` `play_done` `hiyari` `combo_warn` `pickup` `fuss` `respawn` `clear` `fail` `bgm_main` `bgm_bored` |
+| `assets/audio/<name>.mp3`（または .ogg）＋ `assets/audio/manifest.json` | `click` `fix_done` `trash` `play_done` `merge` `hiyari` `combo_warn` `deny` `pickup` `fuss` `respawn` `mouth` `relief` `climb` `fall_safe` `visitor` `cat` `clear` `fail` `bgm_main` `bgm_bored`。詳細は [assets/audio/README.md](assets/audio/README.md) |
 
 生成の指示は仕様書 §9.3（「low-poly, flat-shaded, toy-like, pastel colors」、1 モデル 5,000 ポリゴン以下、効果音は「toy-like, soft, not scary」）。
 

@@ -6,24 +6,40 @@ import { unverifiedTips } from './game/edu.js';
 import { createUI } from './ui.js';
 import { createInput } from './input.js';
 import { SilentAudio } from './audio/silent.js';
+import { WebAudio } from './audio/webaudio.js';
 import { Canvas2DRenderer } from './render/canvas2d/Canvas2DRenderer.js';
 
 const MAX_DT = 1 / 20;
 // HUD 帯の高さ（style.css の --hud-h と合わせる）。部屋はこの下に letterbox で収める
 const HUD_BAND_PX = 60;
 
-// effect type → 音声 name（§9.2）
+// effect type → 音声 name（§9.2 ＋ 追加分）。null を返す effect は無音
 function audioNameFor(type, payload) {
   switch (type) {
     case 'fixed':
-    case 'removed': return 'fix_done';
+    case 'removed':
+    case 'stored': return 'fix_done';
+    case 'trashed': return 'trash';
     case 'recipe_ok': return payload && payload.type === 'toy' ? 'play_done' : null; // fix 型は同時に出る fixed が鳴る
+    case 'toy_merged': return 'merge';
+    case 'recipe_ng':
+    case 'high_full': return 'deny';
     case 'play_done': return 'play_done';
-    case 'hiyari': return 'hiyari';
+    case 'hiyari':
+    case 'combo_hiyari': return 'hiyari';
     case 'combo_warn': return payload && payload.active ? 'combo_warn' : null;
     case 'pickup': return 'pickup';
+    case 'takeaway': return 'pickup';
     case 'fuss_start': return 'fuss';
     case 'respawn': return 'respawn';
+    case 'mouth_start': return 'mouth';
+    case 'mouth_release': return 'relief';
+    case 'climb_start': return 'climb';
+    case 'climb_fall_safe': return 'fall_safe';
+    case 'visitor_enter': return payload && payload.visitorType === 'cat' ? 'cat' : 'visitor';
+    case 'visitor_drop': return 'deny';
+    case 'cat_take':
+    case 'cat_drop': return 'cat';
     case 'stage_clear': return 'clear';
     case 'stage_fail': return 'fail';
     default: return null;
@@ -52,20 +68,28 @@ function gameMode() {
   return BUILD_MODE;
 }
 
-async function pickLayers(mode) {
+// 音声層：フェーズ1・2 とも WebAudio（合成音）。assets/audio/*.mp3 を置けばファイル再生に差し替わる。
+// AudioContext が使えない環境だけ SilentAudio（ミュートトグルも出さない）
+function pickAudio(mode) {
+  try {
+    // assets/audio を配るのは 3D ビルドだけ。2D（単一ファイル）は合成音のみ
+    const a = new WebAudio({ useFiles: mode === '3d' });
+    if (a.available) return a;
+  } catch (e) { console.warn('[main] WebAudio unavailable, falling back to silent', e); }
+  return new SilentAudio();
+}
+
+async function pickRenderer(mode) {
   if (CAN_LOAD_3D && mode === '3d') {
     try {
-      // フェーズ2：Three.js 描画層と WebAudio。静的パスの import() なので Vite がバンドルする
-      const [r, a] = await Promise.all([
-        import('./render/three/ThreeRenderer.js'),
-        import('./audio/webaudio.js')
-      ]);
-      return { renderer: new r.ThreeRenderer({ topInset: HUD_BAND_PX }), audio: new a.WebAudio() };
+      // フェーズ2：Three.js 描画層。静的パスの import() なので Vite がバンドルする
+      const r = await import('./render/three/ThreeRenderer.js');
+      return new r.ThreeRenderer({ topInset: HUD_BAND_PX });
     } catch (e) {
-      console.warn('[main] 3D layers unavailable, falling back to Canvas 2D', e);
+      console.warn('[main] 3D renderer unavailable, falling back to Canvas 2D', e);
     }
   }
-  return { renderer: new Canvas2DRenderer({ topInset: HUD_BAND_PX }), audio: new SilentAudio() };
+  return new Canvas2DRenderer({ topInset: HUD_BAND_PX });
 }
 
 async function boot() {
@@ -80,7 +104,9 @@ async function boot() {
   const uiEl = document.getElementById('ui');
   const logEl = document.getElementById('log');
 
-  const { renderer, audio } = await pickLayers(gameMode());
+  const mode = gameMode();
+  const renderer = await pickRenderer(mode);
+  const audio = pickAudio(mode);
   renderer.init(gameEl);
 
   const ui = createUI({
@@ -95,7 +121,11 @@ async function boot() {
   const input = createInput({
     element: gameEl,
     renderer,
-    onEvent: (ev) => game.input(ev),
+    onEvent: (ev) => {
+      // ドラッグ開始 / 長押し開始のクリック音（§9.2 の click）
+      if (ev.type === 'pressStart') audio.play('click');
+      game.input(ev);
+    },
     getKind: (id) => {
       const s = game.state;
       if (s.babies && s.babies.some(b => b.id === id)) return 'baby';
@@ -110,7 +140,7 @@ async function boot() {
       return !!(o && o.draggable === true);
     },
     // 重いものを引っ張ろうとしたら描画層だけで「動かない」揺れ（ゲームには送らない）
-    onReject: (id) => renderer.playEffect('heavy_nudge', id, {}),
+    onReject: (id) => { renderer.playEffect('heavy_nudge', id, {}); audio.play('deny'); },
     isEnabled: () => game.state.screen === 'play'
   });
 
@@ -129,12 +159,20 @@ async function boot() {
   window.addEventListener('click', initAudio);
 
   // BGM：Play に入ったら bgm_main、出たら停止
+  // BGM：Play に入ったら bgm_main。満足度が低い間は bgm_bored を重ねる（§9.2）
   let bgmScreen = null;
+  let boredLayer = false;
   function watchBgm(state) {
-    if (state.screen === bgmScreen) return;
-    bgmScreen = state.screen;
-    if (state.screen === 'play') { if (audioReady) audio.startBgm('bgm_main'); }
-    else audio.stopBgm();
+    if (state.screen !== bgmScreen) {
+      bgmScreen = state.screen;
+      if (state.screen === 'play') { if (audioReady) audio.startBgm('bgm_main'); }
+      else { audio.stopBgm(); boredLayer = false; }
+    }
+    if (state.screen !== 'play' || !audioReady) return;
+    const bored = !!(state.babies && state.babies.some(b => b.satLow));
+    if (bored === boredLayer) return;
+    boredLayer = bored;
+    if (bored) audio.startBgm('bgm_bored'); else audio.stopBgm('bgm_bored');
   }
 
   // Loading に入ったら描画層に素材を読ませ、終わったら assetsReady
@@ -184,7 +222,7 @@ async function boot() {
   window.__input = input;
   window.__seed = seed;
   window.__audio = audio;
-  window.__mode = gameMode();
+  window.__mode = mode;
 }
 
 boot().catch((e) => {

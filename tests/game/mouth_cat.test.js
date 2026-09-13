@@ -427,7 +427,7 @@ test('cat: appears at 27 s in twins, takes floor objects (cat_take) and drops th
     });
     const enter = ofType(fx, 'visitor_enter').filter(e => e.objectId === 'cat');
     assert.equal(enter.length, 1, `seed ${seed} enter`);
-    assert.deepEqual(enter[0].payload, { x: def.entry.x, y: def.entry.y });
+    assert.deepEqual(enter[0].payload, { x: def.entry.x, y: def.entry.y, visitorType: 'cat' });
     assert.ok(takes.length >= 1, `seed ${seed} takes`);
     assert.ok(drops.length >= 1, `seed ${seed} drops`);
     assert.ok(takes.length <= TUNING.CAT_STEALS);

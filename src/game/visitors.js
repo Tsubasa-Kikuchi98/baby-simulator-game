@@ -94,7 +94,7 @@ function updateUncle(v, state, tuning, effects, dt) {
     v.active = true;
     const p = pointAt(v.path, v.segs, 0);
     v.x = p.x; v.y = p.y; v.dirX = p.dirX; v.dirY = p.dirY;
-    effects.push({ type: 'visitor_enter', objectId: v.id, payload: { x: v.x, y: v.y } });
+    effects.push({ type: 'visitor_enter', objectId: v.id, payload: { x: v.x, y: v.y, visitorType: v.type } });
   }
   v.dist = Math.min(v.total, v.dist + speed * dt);
   // 等間隔の地点を通過したら落とす（1 フレームで複数通過してもすべて落とす）
@@ -194,7 +194,7 @@ function updateCat(v, state, tuning, effects, dt, rng) {
     v.active = true;
     v.x = v.entry.x;
     v.y = v.entry.y;
-    effects.push({ type: 'visitor_enter', objectId: v.id, payload: { x: v.x, y: v.y } });
+    effects.push({ type: 'visitor_enter', objectId: v.id, payload: { x: v.x, y: v.y, visitorType: v.type } });
     catSeek(v, state, rng);
   }
   // 1 フレームに 1 フェーズだけ進める（速度の整合のため）

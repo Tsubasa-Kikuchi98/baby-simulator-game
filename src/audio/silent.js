@@ -1,4 +1,4 @@
-// フェーズ1：音なし実装
+// 音なし実装（AudioContext が使えない環境のフォールバック）
 import { IAudio } from './IAudio.js';
 export class SilentAudio extends IAudio {
   constructor() { super(); this.muted = false; }

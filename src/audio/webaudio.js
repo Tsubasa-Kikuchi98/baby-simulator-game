@@ -1,11 +1,14 @@
-// フェーズ2：Web Audio API 実装（§9.2）
-// - assets/audio/<name>.mp3（または .ogg）があればそれを再生。無ければ OscillatorNode の合成音で代替
+// Web Audio API 実装（§9.2）。フェーズ1（2D）・フェーズ2（3D）で共通して使う
+// - 既定は OscillatorNode の合成音。assets/audio/manifest.json に名前を並べると同名のファイル再生に差し替わる
+//   （manifest を見てから取りに行くので、ファイルが無い状態で 404 を出さない。単一ファイルの 2D ビルドでは
+//    そもそも assets/ を配らないので useFiles:false で読み込み自体を行わない）
 // - AudioContext は init()（初回ユーザー操作後）まで生成しない
 // - ミュート設定は localStorage に保存
 import { IAudio } from './IAudio.js';
 
 const STORAGE_KEY = 'babysafe.muted';
 const FILE_BASE = './assets/audio/';
+const MANIFEST_URL = `${FILE_BASE}manifest.json`;
 const EXTS = ['mp3', 'ogg'];
 
 // 合成音の定義：[{ type, freq, endFreq?, dur, gain, delay? }, ...]  toy-like, soft, not scary
@@ -19,7 +22,17 @@ const SYNTH = {
   fuss:       [{ type: 'sawtooth', freq: 180, endFreq: 150, dur: 0.4, gain: 0.1 }],
   respawn:    [{ type: 'triangle', freq: 330, endFreq: 440, dur: 0.25, gain: 0.12 }, { type: 'triangle', freq: 440, dur: 0.2, gain: 0.1, delay: 0.25 }],
   clear:      [{ type: 'triangle', freq: 523, dur: 0.25, gain: 0.15 }, { type: 'triangle', freq: 659, dur: 0.25, gain: 0.15, delay: 0.25 }, { type: 'triangle', freq: 784, dur: 0.25, gain: 0.15, delay: 0.5 }, { type: 'triangle', freq: 1046, dur: 0.8, gain: 0.15, delay: 0.75 }],
-  fail:       [{ type: 'sine', freq: 392, dur: 0.4, gain: 0.15 }, { type: 'sine', freq: 330, dur: 0.4, gain: 0.15, delay: 0.4 }, { type: 'sine', freq: 262, dur: 1.0, gain: 0.15, delay: 0.8 }]
+  fail:       [{ type: 'sine', freq: 392, dur: 0.4, gain: 0.15 }, { type: 'sine', freq: 330, dur: 0.4, gain: 0.15, delay: 0.4 }, { type: 'sine', freq: 262, dur: 1.0, gain: 0.15, delay: 0.8 }],
+  // 以下は §9.2 の一覧に加えて、画面で起きることに音を付けるための追加分（すべてファイルで差し替え可能）
+  deny:       [{ type: 'square',   freq: 200,  endFreq: 150, dur: 0.12, gain: 0.09 }],        // 動かない・置けない・合わない
+  trash:      [{ type: 'triangle', freq: 300,  endFreq: 180, dur: 0.18, gain: 0.12 }],        // ゴミ箱に捨てた
+  merge:      [{ type: 'triangle', freq: 659,  dur: 0.12, gain: 0.14 }, { type: 'triangle', freq: 880, dur: 0.12, gain: 0.14, delay: 0.1 }, { type: 'sine', freq: 1318, dur: 0.4, gain: 0.12, delay: 0.2 }],
+  mouth:      [{ type: 'sine',     freq: 520,  endFreq: 300, dur: 0.22, gain: 0.14 }, { type: 'sine', freq: 300, dur: 0.3, gain: 0.1, delay: 0.22 }],  // 口に入れた（警告。驚かせない）
+  relief:     [{ type: 'sine',     freq: 440,  endFreq: 587, dur: 0.28, gain: 0.12 }],        // 口から離した「ほっ」
+  climb:      [{ type: 'triangle', freq: 330,  endFreq: 494, dur: 0.3,  gain: 0.1 }],         // ソファに登った
+  fall_safe:  [{ type: 'sine',     freq: 494,  endFreq: 330, dur: 0.2,  gain: 0.12 }, { type: 'triangle', freq: 262, dur: 0.18, gain: 0.1, delay: 0.18 }], // マットの上に落ちた
+  visitor:    [{ type: 'sawtooth', freq: 147,  dur: 0.14, gain: 0.07 }, { type: 'sawtooth', freq: 131, dur: 0.2, gain: 0.07, delay: 0.16 }],  // おじさん登場
+  cat:        [{ type: 'sine',     freq: 784,  endFreq: 988, dur: 0.16, gain: 0.09 }, { type: 'sine', freq: 880, endFreq: 660, dur: 0.2, gain: 0.09, delay: 0.16 }]  // 猫
 };
 
 // 合成 BGM：明るいアルペジオのループ（歌なし）
@@ -29,12 +42,14 @@ const BGM_NOTES = {
 };
 
 export class WebAudio extends IAudio {
-  constructor() {
+  /** @param {{useFiles?: boolean}} [opts] useFiles:false なら assets/audio を読まず合成音だけで鳴らす */
+  constructor({ useFiles = true } = {}) {
     super();
+    this.useFiles = useFiles;
     this.ctx = null;
     this.master = null;
     this.buffers = new Map();   // name -> AudioBuffer | null（null = ファイルなし）
-    this.bgm = null;            // { name, stop() }
+    this.bgms = new Map();      // name -> { stop() }（bgm_main に bgm_bored を重ねられる）
     this.muted = false;
     try { this.muted = localStorage.getItem(STORAGE_KEY) === '1'; } catch (_) { /* ignore */ }
     this.available = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
@@ -47,14 +62,32 @@ export class WebAudio extends IAudio {
     this.master = this.ctx.createGain();
     this.master.gain.value = this.muted ? 0 : 1;
     this.master.connect(this.ctx.destination);
-    // ファイルの事前読み込み（無ければ null を記録して合成音にフォールバック）
-    for (const name of [...Object.keys(SYNTH), ...Object.keys(BGM_NOTES)]) this._loadFile(name);
+    // manifest に載っている名前だけファイルを読む（載っていない名前は合成音のまま）
+    if (this.useFiles) this._loadManifest();
   }
 
-  async _loadFile(name) {
+  async _loadManifest() {
+    let names = [];
+    try {
+      const res = await fetch(MANIFEST_URL);
+      if (!res.ok) return;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('text/html')) return; // dev サーバの index フォールバックを除外
+      const json = await res.json();
+      names = Array.isArray(json) ? json : (Array.isArray(json && json.files) ? json.files : []);
+    } catch (_) { return; }   // manifest が無ければ全部合成音
+    const known = new Set([...Object.keys(SYNTH), ...Object.keys(BGM_NOTES)]);
+    for (const entry of names) {
+      const name = String(entry).replace(/\.(mp3|ogg)$/i, '');
+      if (!known.has(name)) { console.warn(`[audio] manifest の "${entry}" は使われない名前`); continue; }
+      this._loadFile(name, String(entry).includes('.') ? [String(entry).split('.').pop()] : EXTS);
+    }
+  }
+
+  async _loadFile(name, exts = EXTS) {
     if (this.buffers.has(name)) return this.buffers.get(name);
     this.buffers.set(name, undefined); // loading
-    for (const ext of EXTS) {
+    for (const ext of exts) {
       try {
         const res = await fetch(`${FILE_BASE}${name}.${ext}`);
         if (!res.ok) continue;
@@ -103,18 +136,17 @@ export class WebAudio extends IAudio {
 
   startBgm(name) {
     if (!this.ctx) return;
-    if (this.bgm && this.bgm.name === name) return;
-    this.stopBgm();
+    if (this.bgms.has(name)) return;   // 同じレイヤーは二重に鳴らさない
     const buf = this.buffers.get(name);
     if (buf) {
       const src = this.ctx.createBufferSource();
       src.buffer = buf;
       src.loop = true;
       const g = this.ctx.createGain();
-      g.gain.value = 0.35;
+      g.gain.value = name === 'bgm_bored' ? 0.2 : 0.35;
       src.connect(g).connect(this.master);
       src.start();
-      this.bgm = { name, stop: () => { try { src.stop(); } catch (_) {} } };
+      this.bgms.set(name, { stop: () => { try { src.stop(); } catch (_) {} g.disconnect(); } });
       return;
     }
     const notes = BGM_NOTES[name];
@@ -139,11 +171,16 @@ export class WebAudio extends IAudio {
       osc.start(t);
       osc.stop(t + beat);
     }, beat * 1000);
-    this.bgm = { name, stop: () => { clearInterval(timer); g.disconnect(); } };
+    this.bgms.set(name, { stop: () => { clearInterval(timer); g.disconnect(); } });
   }
 
-  stopBgm() {
-    if (this.bgm) { this.bgm.stop(); this.bgm = null; }
+  /** name を省略すると全レイヤーを止める */
+  stopBgm(name) {
+    for (const [n, h] of [...this.bgms]) {
+      if (name != null && n !== name) continue;
+      h.stop();
+      this.bgms.delete(n);
+    }
   }
 
   setMuted(b) {
