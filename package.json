@@ -1,0 +1,29 @@
+{
+  "name": "baby-safe-room",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ベビーセーフ・ルーム — 家庭内事故予防を学ぶトップビュー・シミュレーションゲーム",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build --base ./",
+    "build:3d": "cross-env-shell GAME_MODE=3d vite build --base ./ --outDir dist-3d",
+    "preview": "vite preview",
+    "sim": "node sim/run.js",
+    "sim:assert": "node sim/assert.js",
+    "sim:tune": "node sim/tune.js",
+    "test:game": "node --test 'tests/game/**/*.test.js'",
+    "test:browser": "node tests/browser.mjs",
+    "test:browser3d": "node tests/browser3d.mjs",
+    "check:pure": "grep -rnE 'document\\.|window\\.|canvas|CanvasRenderingContext|THREE|requestAnimationFrame|Math\\.random' src/game/ && echo 'NG: src/game references DOM/Canvas/Math.random' && exit 1 || echo 'OK: src/game is pure'"
+  },
+  "devDependencies": {
+    "vite": "^5.4.0",
+    "vite-plugin-singlefile": "^2.0.0",
+    "playwright": "^1.47.0",
+    "cross-env": "^7.0.3"
+  },
+  "dependencies": {
+    "three": "^0.168.0"
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+dist-3d/
+tests/screenshots/
+sim/out/
+.DS_Store
