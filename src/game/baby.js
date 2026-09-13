@@ -127,7 +127,9 @@ export function targetWeight(obj, baby, state, tuning) {
       if (combo && comboTriggers(combo, obj.state)) base *= tuning.COMBO_ATTRACT;
     }
   }
-  return base / (dist(baby, obj) + 100);
+  // 距離の効き方（TARGET_DIST_BIAS）。小さいほど「近いものばかり選ぶ」＝部屋の真ん中に居着く。
+  // 大きいほど遠くの目標も選ぶようになり、部屋全体を歩き回る（CONTRACT §12.9）
+  return base / (dist(baby, obj) + tuning.TARGET_DIST_BIAS);
 }
 
 function resetStuck(baby) {
@@ -274,7 +276,9 @@ function followCarried(baby, state) {
 
 function idleWander(baby, state, tuning, rng, dt) {
   if (!baby.idleTarget || dist(baby, baby.idleTarget) < 4) {
-    const p = snapToFloor(ROOM.cx + (rng() * 2 - 1) * 60, ROOM.cy + (rng() * 2 - 1) * 60, state.stage.walls, tuning);
+    // 目標が無いときのうろつき先。部屋の中央付近ではなく部屋全体から選ぶ（真ん中に居着かせない）
+    const m = tuning.BABY_RADIUS + 10;
+    const p = snapToFloor(m + rng() * (ROOM.w - 2 * m), m + rng() * (ROOM.h - 2 * m), state.stage.walls, tuning);
     baby.idleTarget = p;
   }
   moveTowardWithHeading(baby, baby.idleTarget.x, baby.idleTarget.y, baby.speed * 0.4, dt, state.stage.walls, tuning);

@@ -10,13 +10,19 @@ export const ROOM = { w: 800, h: 540, cx: 400, cy: 270 };
 // v3（CONTRACT §9）以降の MOVE_* / MOOD_SPEED_GAIN は初期値のまま。調整はユーザー判断（sim/assert.js の結果を見て決める）。
 // 2026-09-13：難易度が低すぎたため、ユーザー判断で BABY_SPEED を 1.5 倍に（47→70、ステージ3 65→98）。
 export const TUNING = {
-  // 2026-09-13：ステージ3（CONTRACT §12）は「物量と速度」ではなく「判断の質」で難しくする方針のため、
-  // BABY_SPEED_STAGE3 を 98 → 78 に引き下げた（仕掛け側で難度を出す。最終値は sim:assert で確認する）
-  BABY_SPEED: 70, BABY_SPEED_STAGE3: 78, BORED_SPEED_MULT: 1.3,
+  // 2026-09-13：ステージ3（CONTRACT §12）は「物量と速度」ではなく「判断の質」で難しくする方針でいったん 98 → 78 にしたが、
+  // 実際に遊んで「まだ簡単・赤ちゃんがほぼ真ん中にしかいない」との判断で 110 へ（CONTRACT §12.9）。
+  // 計測（optimal ボット・n=30）では部屋の踏破率 69% → 81%、中心からの平均距離 188 → 196 px
+  BABY_SPEED: 70, BABY_SPEED_STAGE3: 110, BORED_SPEED_MULT: 1.3,
   PLAY_SEC: 3, BORED_SEC_BASE: 30, BORED_SEC_STEP: 10, DROP_AFTER_SEC: 8, TAKEAWAY_BORED_SEC: 3,
   SAT_START: 70, SAT_NO_TOY: -1.9, SAT_IDLE: -0.5, SAT_PLAY_BY_COUNT: [25, 15, 10], SAT_LOW: 40,
   WEIGHT_TOY: 3.0, WEIGHT_TOY_DRAGGED: 5.0, WEIGHT_HAZARD: 1.0, WEIGHT_HAZARD_BORED: 1.5,
   TOUCH_DIST: 28, COMBO_WARN_DIST: 80,
+  // 目標選択の重み = base / (距離 + TARGET_DIST_BIAS)。小さいほど近いものばかり選び、部屋の真ん中に居着きやすい。
+  // 2026-09-13：260 まで上げて試したが、ステージ3 の踏破率への寄与は 79%→81% とわずかで、
+  // 一方でステージ1・2 が明確に易しくなった（noop クリア率 37%→51%）ため 100（従来の埋め込み値）に戻した。
+  // 「赤ちゃんが真ん中から出てこない」の主因は距離バイアスではなく、おもちゃの配置だった（CONTRACT §12.9）
+  TARGET_DIST_BIAS: 100,
   PICKUP_SAT: -15, TAKEAWAY_SAT: -20, TAKEAWAY_HOLD_SEC: 0.5,
   INTERVENE_REPEAT_SEC: 20, INTERVENE_REPEAT_MULT: 2,
   FUSS_SEC: 5, FUSS_SPEED_MULT: 1.5, FUSS_HAZARD_WEIGHT: 2.0, FUSS_PLAY_SAT: 12,
@@ -261,22 +267,25 @@ const eveningObjects = () => [
   hazard('outlet',    'コンセント', '感電',     'コンセントカバー', '🔌', 36,  400, 'heavy'),
   hazard('drawer',    '引き出し',   '指はさみ', 'チャイルドロック', '🗄️', 700, 430, 'heavy'),
   hazard('detergent', '洗剤ボトル', '誤飲',     '高い棚へ移す',     '🧴', 110, 180, 'light'),
-  item('battery', 'ボタン電池', '誤飲', 'ゴミ箱に捨てる', '🔋', 400, 200, 22),
+  item('battery', 'ボタン電池', '誤飲', 'ゴミ箱に捨てる', '🔋', 500, 150, 22),
   container('bin', 'フタ付きゴミ箱', '🗑️', 240, 430),
-  toy('ball',   'ボール',         '⚽', 250, 250),
-  toy('blocks', '積み木',         '🟦', 560, 300),
-  toy('bear',   'ぬいぐるみ',     '🧸', 330, 420),
-  toy('cloth',  '布',             '🧣', 620, 420),
-  toy('spoon',  '金属のスプーン', '🥄', 200, 350),
-  toy('puzzle', 'ジグソーパズル', '🧩', 480, 180, { ingestible: true, riskLabel: '小さなピース' }),
+  // おもちゃは部屋の四隅・外周に散らす（CONTRACT §12.9）。toy は hazard の 3 倍の重みで選ばれるため、
+  // 中央に固めると赤ちゃんが中央から出てこない。あわせて combo の相手（ボール×窓・布×洗剤・スプーン×コンセント）
+  // からも離し、「持って部屋を横断する」動きが出るようにしている
+  toy('ball',   'ボール',         '⚽', 250, 500),
+  toy('blocks', '積み木',         '🟦', 120, 250),
+  toy('bear',   'ぬいぐるみ',     '🧸', 700, 500),
+  toy('cloth',  '布',             '🧣', 560, 380),
+  toy('spoon',  '金属のスプーン', '🥄', 700, 150),
+  toy('puzzle', 'ジグソーパズル', '🧩', 250, 180, { ingestible: true, riskLabel: '小さなピース' }),
   prop('cushion',  'クッション', '🟫', 560, 480),
   prop('magazine', '雑誌',       '📖', 230, 100),
   goods('window_lock',  'まどの補助錠',     '🔏', 330, 250, ['window']),
   goods('balcony_lock', 'ベランダの補助錠', '🔏', 470, 250, ['balcony']),
   goods('towel',        'タオル',           '🧻', 620, 210, ['puddle']),
-  goods('heater_guard', 'ヒーターガード',   '🚧', 300, 200, ['heater']),
-  goods('tie',          'コード留め',       '🪢', 400, 130, ['rice_cooker']),
-  goods('lock',         'チャイルドロック', '🔒', 520, 400, ['stove', 'drawer']),
+  goods('heater_guard', 'ヒーターガード',   '🚧', 250, 330, ['heater']),
+  goods('tie',          'コード留め',       '🪢', 560, 110, ['rice_cooker']),
+  goods('lock',         'チャイルドロック', '🔒', 470, 460, ['stove', 'drawer']),
   goods('lock_b',       'チャイルドロック', '🔒', 710, 255, ['stove', 'drawer']),
   goods('cover',        'コンセントカバー', '🩹', 90,  350, ['outlet'])
 ];
@@ -329,7 +338,8 @@ export const STAGES = [
   },
   {
     id: 3, name: '夕方のリビング', timeLimit: 60, babies: 1,
-    babySpawns: [{ x: 400, y: 250 }],
+    // 水たまり（y 270〜370）から十分離す。ヒヤリのたびにここへ戻るので、再発する面のハザードの上に置かない
+    babySpawns: [{ x: 400, y: 165 }],
     walls: eveningWalls,
     objects: eveningObjects(),
     combos: ALL_COMBOS.filter(c => (c.toy === 'spoon' && c.hazard === 'outlet') ||
