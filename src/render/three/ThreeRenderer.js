@@ -10,7 +10,7 @@ import { IRenderer } from '../IRenderer.js';
 import { ROOM, TUNING } from '../../game/stages.js';
 import { EffectStore, POP_SEC, POP_RISE_PX, POP_COLORS, easeOut } from '../canvas2d/effects.js';
 import {
-  COLORS, makeFloorTexture, makeWallLabelTexture, makeSprite, makeCheckTexture, makeAkitaTexture,
+  COLORS, makeFloorTexture, makeSprite, makeCheckTexture, makeAkitaTexture,
   makeGrumpyTexture, makePopTexture, makeLockTexture, makeEmojiTexture, makeMatTexture, makeRiskBadgeTexture, disposeSprite
 } from './textures.js';
 import { ParticleSystem } from './particles.js';
@@ -18,6 +18,7 @@ import { AssetCache, fitModel, countVertices, disposeObject } from './assets.js'
 import { ObjectView, BOX_H } from './ObjectView.js';
 import { BabyView } from './BabyView.js';
 import { VisitorView, CatView } from './VisitorView.js';
+import { LabelLayer } from './labels.js';
 import { hintTargets, hintWalls, boredFraction, isStored, findWall, highPlaceCount, wallCapacity, isHighPlaceFull } from '../hints.js';
 
 const WALL_H = 60;
@@ -110,6 +111,10 @@ export class ThreeRenderer extends IRenderer {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = this.softwareGL ? THREE.BasicShadowMap : THREE.PCFSoftShadowMap;
     renderer.setClearColor(COLORS.background, 1);
+    // トーンマッピング：明部の白飛びを抑えて陰影の階調を残す（箱でも立体に見せるため）。
+    // UI 的な Sprite は toneMapped:false（textures.js の makeSprite）なので色が転ばない
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.25;
     this.renderer = renderer;
     const canvas = renderer.domElement;
     canvas.className = 'game-canvas game-canvas-3d';
@@ -127,7 +132,15 @@ export class ThreeRenderer extends IRenderer {
     container.appendChild(flash);
     this.flashEl = flash;
 
-    this.shared = { checkTex: makeCheckTexture(), akitaTex: makeAkitaTexture(), grumpyTex: makeGrumpyTexture(), lockTex: makeLockTexture(), riskTex: makeRiskBadgeTexture() };
+    // ラベルは HTML の div レイヤー（labels.js）。Sprite 縮小によるボケを避けるため
+    this.labelLayer = new LabelLayer(container);
+    this.shared = { checkTex: makeCheckTexture(), akitaTex: makeAkitaTexture(), grumpyTex: makeGrumpyTexture(), lockTex: makeLockTexture(), riskTex: makeRiskBadgeTexture(), labels: this.labelLayer };
+
+    // ホバー中の id はラベルの優先表示にだけ使う（state には一切触らない）
+    this._hoverPos = null;
+    this._onPointerMove = (e) => { this._hoverPos = { x: e.clientX, y: e.clientY }; };
+    canvas.addEventListener('mousemove', this._onPointerMove);
+    canvas.addEventListener('mouseleave', () => { this._hoverPos = null; this.hoverId = null; });
     this.particles = new ParticleSystem(this.room);
     this._buildLights();
     this._buildFloor();
@@ -220,12 +233,14 @@ export class ThreeRenderer extends IRenderer {
       this.floor.material.dispose();
       this.floorTex.dispose();
     }
-    if (this.shared) for (const t of Object.values(this.shared)) t.dispose();
+    if (this.shared) for (const [k, t] of Object.entries(this.shared)) { if (k !== 'labels') t.dispose(); }
     for (const l of this.lights) { if (l.dispose) l.dispose(); this.scene.remove(l); }
     if (this.renderer) {
       this.renderer.dispose();
       if (this.canvas && this.canvas.parentNode) this.canvas.parentNode.removeChild(this.canvas);
     }
+    if (this.canvas && this._onPointerMove) this.canvas.removeEventListener('mousemove', this._onPointerMove);
+    if (this.labelLayer) { this.labelLayer.dispose(); this.labelLayer = null; }
     if (this.flashEl && this.flashEl.parentNode) this.flashEl.parentNode.removeChild(this.flashEl);
     this.renderer = null;
     this.canvas = null;
@@ -236,8 +251,13 @@ export class ThreeRenderer extends IRenderer {
   // ---------------------------------------------------------------- scene building
 
   _buildLights() {
-    const ambient = new THREE.AmbientLight(0xffffff, 0.95);
-    const dir = new THREE.DirectionalLight(0xfff3e2, 1.9);
+    // 以前は AmbientLight 0.95 だけで全方向を一様に持ち上げていたため陰影が潰れ、
+    // どの面も同じ明るさ＝「板」に見えていた。環境光を落として
+    // 半球光（空＝暖色／床＝床の反射色）で方向性を与え、主光源の陰影を効かせる。
+    const ambient = new THREE.AmbientLight(0xffffff, 0.30);
+    const hemi = new THREE.HemisphereLight(0xfff0dc, 0xb99b78, 0.75);
+    hemi.position.set(0, 600, 0);
+    const dir = new THREE.DirectionalLight(0xfff3e2, 1.65);
     dir.position.set(-260, 560, 240);
     dir.target.position.set(0, 0, 0);
     dir.castShadow = true;
@@ -248,8 +268,11 @@ export class ThreeRenderer extends IRenderer {
     sc.near = 50; sc.far = 1500;
     dir.shadow.bias = -0.0005;
     dir.shadow.normalBias = 1.0;
-    this.scene.add(ambient, dir, dir.target);
-    this.lights = [ambient, dir];
+    // 主光源の反対側から弱い補助光。輪郭が背景に溶けないようにする
+    const fill = new THREE.DirectionalLight(0xd8e4ff, 0.35);
+    fill.position.set(340, 300, -280);
+    this.scene.add(ambient, hemi, dir, dir.target, fill);
+    this.lights = [ambient, hemi, dir, fill];
   }
 
   _buildFloor() {
@@ -276,9 +299,8 @@ export class ThreeRenderer extends IRenderer {
     let label = null;
     if (wall.label) {
       // 高い場所はラベルに n/容量（＋満）が付いて長くなるので広めに
-      const w = wall.highPlace ? Math.min(220, Math.max(150, Math.min(wall.w, wall.h) * 2.2)) : Math.min(120, Math.max(60, Math.min(wall.w, wall.h) * 1.2));
-      label = makeSprite(makeWallLabelTexture(wall.label), w, w / 4, { depthTest: true, renderOrder: 5 });
-      label.position.set(wall.x + wall.w / 2, WALL_H + 8, wall.y + wall.h / 2);
+      label = this.labelLayer.create(wall.label, { variant: 'wall', priority: 1 });
+      label.position.set(wall.x + wall.w / 2, WALL_H + 10, wall.y + wall.h / 2);
       this.stageGroup.add(label);
     }
     // 高い場所：上面にヒント板（軽いものをドラッグ中に脈打つ）
@@ -339,6 +361,7 @@ export class ThreeRenderer extends IRenderer {
     this.canvas.style.top = `${top}px`;
     this.canvas.style.height = `${availH}px`;
     this.renderer.setSize(w, availH, false);
+    if (this.labelLayer) this.labelLayer.setViewport(top, w, availH);
     this._size = { w, h: availH, top };
     this.camera.aspect = w / availH;
     this._fitCamera();
@@ -754,6 +777,27 @@ export class ThreeRenderer extends IRenderer {
     if (this.flashEl && this.flashEl.style.opacity !== faStr) this.flashEl.style.opacity = faStr;
 
     this.renderer.render(this.scene, this.camera);
+
+    // ラベル（DOM）はワールド行列が確定した render 後に投影する
+    if (this.labelLayer) {
+      // ラベルは play 中だけ。stageResult / finalResult では結果画面に重なるので出さない
+      this.labelLayer.enabled = !!(state && state.screen === 'play');
+      if (live) {
+        this.labelLayer.hoverId = this._pickHover();
+        this.labelLayer.dragId = state.drag ? state.drag.targetId : null;
+      }
+      this.labelLayer.update(this.camera);
+    }
+  }
+
+  /** ホバー中の id（ラベルの優先表示用）。マウスが動いたフレームだけレイキャストする */
+  _pickHover() {
+    const p = this._hoverPos;
+    if (!p) return null;
+    if (this._hoverAt && this._hoverAt.x === p.x && this._hoverAt.y === p.y) return this.hoverId;
+    this._hoverAt = { x: p.x, y: p.y };
+    this.hoverId = this.pickObject(p.x, p.y);
+    return this.hoverId;
   }
 
   _detectLanding(state) {
@@ -814,7 +858,7 @@ export class ThreeRenderer extends IRenderer {
       let v = this.visitors.get(vis.id);
       if (!v) {
         if (!vis.active) continue;                 // まだ現れていない訪問者の View は作らない
-        v = vis.type === 'cat' ? new CatView(vis) : new VisitorView(vis);
+        v = vis.type === 'cat' ? new CatView(vis, this.shared) : new VisitorView(vis, this.shared);
         (this.stageGroup || this.room).add(v.group);
         this.visitors.set(vis.id, v);
       }
@@ -925,10 +969,7 @@ export class ThreeRenderer extends IRenderer {
         const full = n >= cap;
         const text = `${w.def.label ? w.def.label + ' ' : ''}${n}/${cap}${full ? ' 満' : ''}`;
         if (w.label && (text !== w.labelText || full !== w.labelFull)) {
-          const tex = makeWallLabelTexture(text, { color: full ? COLORS.hintFullInk : COLORS.wallText });
-          if (w.label.material.map) w.label.material.map.dispose();
-          w.label.material.map = tex;
-          w.label.material.needsUpdate = true;
+          w.label.setText(text, { alert: full });
           w.labelText = text;
           w.labelFull = full;
         }
@@ -996,7 +1037,7 @@ export class ThreeRenderer extends IRenderer {
           const shake = this.fx.progress('shake', o.id);
           if (shake != null) v.check.position.x += Math.sin(shake * 40) * 5 * (1 - shake);
         } else {
-          v.check.position.set(15, BOX_H + 6, 8);
+          v.check.position.set(15, v.topH + 6, 8);
         }
       }
       const bored = isToy && o.state === 'bored';
@@ -1082,9 +1123,10 @@ export class ThreeRenderer extends IRenderer {
       }
       if (!o.climbable) {
         v.label.visible = !carried;
-        // ✅ とラベルは縮小した本体の高さに合わせる（収納済みは壁の上）
-        v.check.position.y = y + BOX_H * bodyScale + 6;
-        v.label.position.y = y + (v.isGoods || v.isBin ? v.labelH : BOX_H * bodyScale + 24);
+        // ✅ とラベルは縮小した本体の高さに合わせる（収納済みは壁の上）。
+        // v.topH は形状ごとの実高さ（shapes.js）。箱固定の BOX_H を使うと小さい物でラベルが浮く
+        v.check.position.y = y + v.topH * bodyScale + 6;
+        v.label.position.y = y + v.topH * bodyScale + 14;
       }
       if (v.plate) v.plate.visible = !stored;
 

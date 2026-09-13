@@ -71,7 +71,8 @@ export function canvasTexture(canvas, { mipmaps = false } = {}) {
 
 /** Sprite（常に手前に描く UI 的なもの）。w,h はワールド単位 */
 export function makeSprite(texture, w, h, { depthTest = false, renderOrder = 10, opacity = 1 } = {}) {
-  const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest, depthWrite: false, opacity });
+  // toneMapped:false … ✅ や「！」などの UI 表示は renderer のトーンマッピングで色が転ばないようにする
+  const mat = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest, depthWrite: false, opacity, toneMapped: false });
   const sp = new THREE.Sprite(mat);
   sp.scale.set(w, h, 1);
   sp.renderOrder = renderOrder;
@@ -80,6 +81,7 @@ export function makeSprite(texture, w, h, { depthTest = false, renderOrder = 10,
 
 export function disposeSprite(sp) {
   if (!sp) return;
+  if (sp.isDomLabel) { sp.dispose(); return; }   // DOM ラベル（labels.js）は自前で後始末する
   if (sp.material) {
     if (sp.material.map) sp.material.map.dispose();
     sp.material.dispose();
@@ -109,7 +111,7 @@ export function drawHaloText(ctx, text, x, y, { px = 40, color = COLORS.label, h
   ctx.fillText(text, x, y);
 }
 
-/** オブジェクト名ラベル（512×96 → 推奨ワールドサイズ 96×18。文字が高さの 7 割を占める） */
+/** オブジェクト名ラベル（512×96）。現在 3D は labels.js の DOM ラベルを使うため未使用（参考実装として残す） */
 export function makeLabelTexture(text, { color = COLORS.label } = {}) {
   const c = makeCanvas(512, 96);
   const ctx = c.getContext('2d');
@@ -346,7 +348,7 @@ export function makeMatTexture(w = 200, h = 40) {
   return canvasTexture(c, { mipmaps: true });
 }
 
-/** 壁（家具）の上面ラベル：512×128 → 推奨 (w, w/4) 程度。color で満杯（赤）などに変えられる */
+/** 壁（家具）の上面ラベル：512×128。現在 3D は labels.js の DOM ラベルを使うため未使用（参考実装として残す） */
 export function makeWallLabelTexture(text, { color = COLORS.wallText } = {}) {
   const c = makeCanvas(512, 128);
   const ctx = c.getContext('2d');

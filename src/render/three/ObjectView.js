@@ -5,7 +5,8 @@
 // v5：ダミー（kind 'prop'）はベージュの平たい板、危険なおもちゃ（ingestible）は上にオレンジの「！」バッジ Sprite。
 // 状態→見た目の判断は ThreeRenderer が行い、ここは setter を提供する。v3：進捗リングは持たない。
 import * as THREE from 'three';
-import { COLORS, makeLabelTexture, makeTopTexture, makeSprite, RingTexture, disposeSprite } from './textures.js';
+import { COLORS, makeTopTexture, makeSprite, RingTexture, disposeSprite } from './textures.js';
+import { buildShape, disposeShape } from './shapes.js';
 import { fitModel, disposeObject } from './assets.js';
 
 export const BOX_W = 36;
@@ -107,7 +108,21 @@ export class ObjectView {
     this.box.receiveShadow = true;
     this.box.userData.id = def.id;
     this.body.add(this.box);
-    this.pickMesh = this.box; // glb が入っても当たり判定は箱で取る（軽い）
+    this.pickMesh = this.box; // glb・プロシージャル形状が入っても当たり判定は箱で取る（軽い）
+
+    this.pickMat = null;
+    // プロシージャル形状（shapes.js）。あれば箱の代わりに出す。glb が来たら setModels が更に上書きする。
+    // 主要部は sideMat を共有しているので、対策時の色替え・ゴースト・emissive はそのまま効く
+    this.shape = buildShape(def, this.sideMat);
+    if (this.shape) {
+      this.body.add(this.shape.group);
+      this._hideBoxKeepPicking();
+      if (this.lid && !this.isBin) this.lid.position.y = this.shape.height;
+    }
+    // ラベル・✅・バッジの基準高さ。形状ごとに高さが違うので箱の固定値（BOX_H）ではなくここを使う
+    this.topH = this.shape ? this.shape.height
+      : (this.isGoods ? GOODS_H : (this.isBin ? BIN_H : (this.isClimbable ? CUSHION_H : (this.isProp ? PROP_H : BOX_H))));
+    this.labelH = this.topH + 14;
 
     // 重い家具：床の暗い台座（据え付けの印）＋ 鍵の Sprite（未対策の間だけ）。登れる家具はクッションだけ（台座・鍵は無し）
     this.plate = null;
@@ -130,8 +145,10 @@ export class ObjectView {
     this.fixedModelMats = [];
 
     const labelText = this.isClimbable ? '登れる' : (def.label || def.id);
-    const labelStyle = this.isGoods ? { color: COLORS.goodsInk } : (this.isClimbable || this.isProp ? { color: COLORS.cushionInk } : {});
-    this.label = makeSprite(makeLabelTexture(labelText, labelStyle), 96, 18);
+    const labelColor = this.isGoods ? COLORS.goodsInk : (this.isClimbable || this.isProp ? COLORS.cushionInk : null);
+    // ラベルは HTML の div（labels.js）。Sprite 互換なので .visible / .position / .material.opacity はそのまま使える
+    this.label = shared.labels.create(labelText, { color: labelColor, priority: this.isProp ? -1 : 0 });
+    this.label.ownerId = def.id;
     this.label.position.set(0, this.labelH, -6);
     this.group.add(this.label);
 
@@ -146,7 +163,7 @@ export class ObjectView {
     }
 
     this.check = makeSprite(shared.checkTex, 14, 14);
-    this.check.position.set(15, BOX_H + 6, 8);
+    this.check.position.set(15, this.topH + 6, 8);
     this.check.visible = false;
     this.group.add(this.check);
 
@@ -154,7 +171,7 @@ export class ObjectView {
     this.risk = null;
     if (this.isRisky && shared.riskTex) {
       this.risk = makeSprite(shared.riskTex, 11, 11, { renderOrder: 11 });
-      this.risk.position.set(14, BOX_H + 6, 10);
+      this.risk.position.set(14, this.topH + 6, 10);
       this.body.add(this.risk);
     }
 
@@ -176,13 +193,28 @@ export class ObjectView {
     this.arc = null;     // { from: Vector3, t, dur }
   }
 
+  /**
+   * 箱の見た目だけ消して当たり判定は残す。
+   * Raycaster は visible:false のメッシュを飛ばすため、box.visible = false にすると掴めなくなる。
+   * colorWrite:false のマテリアルに差し替えて「描画されないが存在する」状態にする。
+   */
+  _hideBoxKeepPicking() {
+    if (this.pickMat) return;
+    this.pickMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+    this.box.material = this.pickMat;
+    this.box.castShadow = false;
+    this.box.receiveShadow = false;
+    this.box.renderOrder = -1;
+  }
+
   /** glb を差し込む（null なら何もしない）。fixedGltf は hazard の対策後モデル */
   setModels(gltf, fixedGltf) {
     if (gltf) {
       this.model = fitModel(gltf.scene, { maxW: BOX_W, maxH: BOX_H + 6, maxD: BOX_W });
       this.modelMats = cloneMaterials(this.model);
       this.body.add(this.model);
-      this.box.visible = false;
+      this._hideBoxKeepPicking();
+      if (this.shape) this.shape.group.visible = false;
       if (this.lid) this.lid.visible = false;
     }
     if (fixedGltf) {
@@ -214,7 +246,8 @@ export class ObjectView {
     if (this.fixedModel) {
       this.fixedModel.visible = fixed;
       if (this.model) this.model.visible = !fixed;
-      this.box.visible = false;
+      this._hideBoxKeepPicking();
+      if (this.shape) this.shape.group.visible = false;
       this.baseEmissive = { color: 0x000000, intensity: 0 };
     } else if (this.model) {
       // 差し替えモデルが無いので緑（収納済みは灰色）に寄せる
@@ -223,13 +256,15 @@ export class ObjectView {
         : { color: 0x000000, intensity: 0 };
     } else {
       const side = fixed ? (this.isStored ? COLORS.stored : COLORS.fixed) : this.style.color;
-      const top = fixed ? (this.isStored ? COLORS.storedTop : COLORS.fixedTop) : this.style.top;
       this.sideMat.color.setHex(side);
-      const tex = makeTopTexture(this.isBin ? null : this.def.emoji, top);
-      this.topMat.map = tex;
-      this.topMat.needsUpdate = true;
-      this.topTex.dispose();
-      this.topTex = tex;
+      if (!this.shape) {   // 形状があるときは箱の上面が隠れているのでテクスチャは作り直さない
+        const top = fixed ? (this.isStored ? COLORS.storedTop : COLORS.fixedTop) : this.style.top;
+        const tex = makeTopTexture(this.isBin ? null : this.def.emoji, top);
+        this.topMat.map = tex;
+        this.topMat.needsUpdate = true;
+        this.topTex.dispose();
+        this.topTex = tex;
+      }
       this.baseEmissive = { color: 0x000000, intensity: 0 };
     }
     this.setEmissive(null);
@@ -251,7 +286,7 @@ export class ObjectView {
     if (on) {
       if (!this.akita) {
         this.akita = makeSprite(this.shared.akitaTex, 32, 12, { renderOrder: 11 });
-        this.akita.position.set(0, BOX_H + 44, -6);
+        this.akita.position.set(0, this.topH + 42, -6);
         this.group.add(this.akita);
       }
       this.akita.visible = true;
@@ -266,7 +301,7 @@ export class ObjectView {
     if (!this.boredRing) {
       this.boredRingTex = new RingTexture({ color: COLORS.bored, track: COLORS.boredTrack, lineWidth: 16, shadow: false });
       this.boredRing = makeSprite(this.boredRingTex.texture, 16, 16, { renderOrder: 11 });
-      this.boredRing.position.set(17, BOX_H + 8, 8);
+      this.boredRing.position.set(17, this.topH + 8, 8);
       this.group.add(this.boredRing);
     }
     this.boredRingTex.update(frac);
@@ -316,6 +351,7 @@ export class ObjectView {
 
   _allMats() {
     const mats = [this.sideMat, this.topMat, ...this.modelMats, ...this.fixedModelMats];
+    if (this.shape) mats.push(...this.shape.mats);
     if (this.lidMat) mats.push(this.lidMat);
     return mats;
   }
@@ -336,6 +372,8 @@ export class ObjectView {
     this.sideMat.dispose();
     this.topMat.dispose();
     this.topTex.dispose();
+    if (this.pickMat) this.pickMat.dispose();
+    if (this.shape) disposeShape(this.shape);
     if (this.model) disposeObject(this.model);
     if (this.fixedModel) disposeObject(this.fixedModel);
   }

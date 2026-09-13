@@ -137,7 +137,12 @@ assets/models/       glb 置き場      assets/audio/  効果音・BGM 置き場
    `playEffect` は「その瞬間に一度だけ起きたこと」専用
 7. **state からの判定ロジックは [src/render/hints.js](src/render/hints.js) に集約する**（両レンダラが共有。
    片方だけに書くと 2D/3D で挙動がずれる）
-8. 3D は「判断は `ThreeRenderer`、見た目の setter は `*View`」の分担
+8. 3D は「判断は `ThreeRenderer`、見た目の setter は `*View`」の分担。
+   ラベルは Sprite ではなく [src/render/three/labels.js](src/render/three/labels.js) の DOM レイヤー（`LabelLayer`）。
+   `DomLabel` は `Object3D` なので従来どおり group に add でき、`.visible` / `.position` / `.material.opacity` がそのまま効く。
+   投影は `renderer.render()` の**後**（ワールド行列確定後）に `labelLayer.update(camera)` で行う
+8b. glb が無いときの形は [src/render/three/shapes.js](src/render/three/shapes.js) のプロシージャル形状。
+   `SHAPES` はオブジェクト id（= `model` 名）で引く。`assets/models/<model>.glb` を置けば `setModels` が自動で上書きする
 9. HUD は描画層の責務ではない（`showOverlay` は両実装とも空）。`topInset`（60px）は必ず尊重する
 
 ### データ・命名
@@ -176,6 +181,9 @@ assets/models/       glb 置き場      assets/audio/  効果音・BGM 置き場
 - **`boredUntil` が3つの意味で使い回されている**：(a) toy の飽き（`bored`/`unbored` effect あり）、
   (b) 登れる家具の飽き（effect なし）、(c) 口から手放した hazard/item の再取得防止（effect なし・`state` は `open` のまま）。
   (b)(c) を toy と同じに扱うと破綻する
+- **`Raycaster` は `visible = false` のメッシュを飛ばす。** 当たり判定用の箱（`ObjectView.pickMesh`）を
+  見た目だけ消すときは `visible` ではなく `_hideBoxKeepPicking()`（`colorWrite: false` のマテリアルに差し替え）を使う。
+  `visible = false` にすると掴めなくなる
 - **描画層は effect の取りこぼしに耐える設計にする。** `playEffect` の時点で state は更新済みなので、
   「直前の位置」が要る演出（転落）は前フレーム値を自前で保持する。リング系の表示は分母のフォールバックを必ず用意する
 - `main.js` が `window.__game / __renderer / __ui / __input / __seed / __audio / __mode` を公開しているのは

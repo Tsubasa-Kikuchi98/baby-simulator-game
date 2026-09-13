@@ -2,7 +2,7 @@
 // CatView（type 'cat'、§11.5）：赤ちゃんの半分ほどの低い横向きカプセル＋4 本の速い脚＋しっぽ＋🐈 の顔。くわえた物は renderer が mouthPosition に置く。
 // どちらも歩行で上下に小さく揺れ、進行方向（dirX, dirY）を向く。プレイヤーは触れない（pickObject の対象にしない）。
 import * as THREE from 'three';
-import { COLORS, makeSprite, makeEmojiTexture, makeLabelTexture, disposeSprite } from './textures.js';
+import { COLORS, makeSprite, makeEmojiTexture, disposeSprite } from './textures.js';
 
 export const VISITOR_H = 60;        // 赤ちゃん（BABY_H 30）の 2 倍
 const WALK_RATE = 9;                // 歩行の上下動（rad/s）
@@ -12,8 +12,8 @@ const armGeo = new THREE.CapsuleGeometry(2.6, 16, 3, 8);
 const discGeo = new THREE.CircleGeometry(13, 24);
 
 export class VisitorView {
-  /** @param {object} def state.visitors[i]（id, label, emoji, x, y） */
-  constructor(def) {
+  /** @param {object} def state.visitors[i]（id, label, emoji, x, y） @param {object} shared 共有テクスチャ＋ labels */
+  constructor(def, shared) {
     this.id = def.id;
     this.group = new THREE.Group();            // 床位置（ゲーム座標）
     this.group.position.set(def.x, 0, def.y);
@@ -50,7 +50,7 @@ export class VisitorView {
     this.group.add(this.disc);
 
     // 名前
-    this.label = makeSprite(makeLabelTexture(def.label || 'おじさん', { color: COLORS.visitorInk }), 96, 18, { renderOrder: 11 });
+    this.label = shared.labels.create(def.label || 'おじさん', { color: COLORS.visitorInk, priority: 2 });
     this.label.position.set(0, VISITOR_H + 20, 0);
     this.group.add(this.label);
 
@@ -116,8 +116,8 @@ const catTailGeo = new THREE.CapsuleGeometry(1.2, 12, 3, 6);
 const catDiscGeo = new THREE.CircleGeometry(12, 20);
 
 export class CatView {
-  /** @param {object} def state.visitors[i]（id, label, emoji, x, y, type:'cat'） */
-  constructor(def) {
+  /** @param {object} def state.visitors[i]（id, label, emoji, x, y, type:'cat'） @param {object} shared 共有テクスチャ＋ labels */
+  constructor(def, shared) {
     this.id = def.id;
     this.type = 'cat';
     this.group = new THREE.Group();
@@ -162,7 +162,7 @@ export class CatView {
     this.group.add(this.disc);
 
     // 名前
-    this.label = makeSprite(makeLabelTexture(def.label || 'ねこ', { color: COLORS.catInk }), 80, 15, { renderOrder: 11 });
+    this.label = shared.labels.create(def.label || 'ねこ', { color: COLORS.catInk, priority: 2 });
     this.label.position.set(0, CAT_H + 28, 0);
     this.group.add(this.label);
 
